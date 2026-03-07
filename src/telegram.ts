@@ -1,0 +1,637 @@
+/**
+ * Food Agent — Telegram bot for tracking food and calories.
+ *
+ * Main entry point. Handles:
+ * - Free-form food logging via LLM orchestrator
+ * - Natural language editing ("change #2 to 3 eggs")
+ * - Cross-questioning for missing info
+ * - Daily/weekly summaries
+ * - Proactive check-ins every 30 minutes
+ * - Deep Q&A via Claude CLI
+ */
+
+import "dotenv/config";
+import TelegramBot from "node-telegram-bot-api";
+import { resolveBotToken, resolveOpenRouterKey } from "./settings.js";
+import {
+  isUserAllowed,
+  upsertPairingRequest,
+  buildPairingMessage,
+  listApprovedUsers,
+} from "./pairing.js";
+import { MessageBuffer, type BufferedMessage } from "./buffer.js";
+import { processMessage, type OrchestratorContext } from "./orchestrator.js";
+import { askAboutFoodData } from "./claude.js";
+import {
+  appendEntries,
+  removeLastEntry,
+  updateTodayEntry,
+  removeTodayEntry,
+  getTodayEntries,
+  getEntriesForDays,
+  getLogDirPath,
+  nowHKT,
+} from "./food-log.js";
+import { loadNutritionDB, addFood } from "./nutrition-db.js";
+import { getTarget, setTarget } from "./targets.js";
+import { getHistory, addMessage } from "./history.js";
+import { markdownToTelegramHtml } from "./format.js";
+import type { FoodEntry } from "./types.js";
+
+// --- Logging ---
+
+function log(level: string, message: string): void {
+  const ts = new Date().toISOString();
+  console.log(`[${ts}] [${level}] [telegram] ${message}`);
+}
+
+// --- Config ---
+
+const DEBOUNCE_MS = 1500;
+const CHECKIN_INTERVAL_MS = 30 * 60 * 1000;
+const QUIET_HOUR_START = 1;
+const QUIET_HOUR_END = 7;
+const MIN_GAP_SINCE_ACTIVITY_MS = 20 * 60 * 1000;
+
+// --- State ---
+
+const lastCheckinTime = new Map<string, number>();
+const lastUserMessageTime = new Map<string, number>();
+
+// --- Helpers ---
+
+async function sendText(
+  bot: TelegramBot,
+  chatId: number,
+  text: string,
+): Promise<void> {
+  const html = markdownToTelegramHtml(text);
+  try {
+    await bot.sendMessage(chatId, html, { parse_mode: "HTML" });
+  } catch {
+    await bot.sendMessage(chatId, text);
+  }
+}
+
+function isQuietHours(timezone: string): boolean {
+  const hourStr = new Date().toLocaleString("en-US", {
+    timeZone: timezone,
+    hour: "numeric",
+    hour12: false,
+  });
+  const hour = parseInt(hourStr, 10);
+  return hour >= QUIET_HOUR_START && hour < QUIET_HOUR_END;
+}
+
+/**
+ * Format today's entries with daily numbers (#1, #2, ...).
+ */
+function formatNumberedEntries(
+  entries: FoodEntry[],
+  timezone: string,
+): string {
+  return entries
+    .map((e, i) => {
+      const time = new Date(e.timestamp).toLocaleTimeString("en-US", {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      return `#${i + 1}  ${time} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
+    })
+    .join("\n");
+}
+
+function formatTodaySummary(
+  entries: FoodEntry[],
+  target: number,
+  timezone: string,
+): string {
+  if (entries.length === 0) {
+    return `Nothing logged today yet. Target: ${target} cal.`;
+  }
+
+  const total = entries.reduce((sum, e) => sum + e.calories, 0);
+  const pct = Math.round((total / target) * 100);
+
+  const lines = [formatNumberedEntries(entries, timezone)];
+  lines.push("");
+  lines.push(`**Total: ${total} / ${target} cal (${pct}%)**`);
+
+  const remaining = target - total;
+  if (remaining > 0) {
+    lines.push(`${remaining} cal remaining`);
+  } else {
+    lines.push(`${Math.abs(remaining)} cal over target`);
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * Build a confirmation message after logging food.
+ * Shows the LLM's message + structured entries with daily numbers.
+ */
+function buildLogConfirmation(
+  llmMessage: string,
+  newEntries: FoodEntry[],
+  allTodayEntries: FoodEntry[],
+  dailyTarget: number,
+  timezone: string,
+): string {
+  const startNum = allTodayEntries.length - newEntries.length + 1;
+  const entryLines = newEntries
+    .map((e, i) => {
+      const time = new Date(e.timestamp).toLocaleTimeString("en-US", {
+        timeZone: timezone,
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+      return `  #${startNum + i}  ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
+    })
+    .join("\n");
+
+  const total = allTodayEntries.reduce((sum, e) => sum + e.calories, 0);
+  const pct = Math.round((total / dailyTarget) * 100);
+
+  return `${llmMessage}\n\n${entryLines}\n  Today: ${total}/${dailyTarget} cal (${pct}%)`;
+}
+
+// --- Message handler ---
+
+async function handleMessages(
+  bot: TelegramBot,
+  openrouterKey: string,
+  userId: string,
+  messages: BufferedMessage[],
+): Promise<void> {
+  const chatId = messages[0].chatId;
+  const combined = messages.map((m) => m.text).join("\n");
+
+  log("INFO", `Processing message from ${userId}: "${combined.slice(0, 100)}"`);
+
+  lastUserMessageTime.set(userId, Date.now());
+  addMessage(userId, "user", combined);
+
+  const target = getTarget(userId);
+  const todayEntries = getTodayEntries(userId, target.timezone);
+  const todayCalories = todayEntries.reduce((sum, e) => sum + e.calories, 0);
+  const knownFoods = loadNutritionDB();
+  const history = getHistory(userId);
+
+  const context: OrchestratorContext = {
+    todayLog: todayEntries,
+    todayCalories,
+    dailyTarget: target.daily_calories,
+    timezone: target.timezone,
+    knownFoods,
+    chatHistory: history,
+  };
+
+  let result;
+  try {
+    result = await processMessage(combined, context, openrouterKey);
+  } catch (err) {
+    log("ERROR", `Orchestrator failed: ${(err as Error).message}`);
+    await sendText(
+      bot,
+      chatId,
+      "Sorry, I had trouble processing that. Try again?",
+    );
+    return;
+  }
+
+  switch (result.type) {
+    case "log_food": {
+      const now = result.timestamp || nowHKT();
+      const entries: FoodEntry[] = result.entries.map((e) => ({
+        timestamp: now,
+        food_item: e.food_item,
+        quantity: e.quantity,
+        unit: e.unit,
+        calories: e.calories,
+        notes: e.notes || "",
+      }));
+
+      appendEntries(userId, entries);
+
+      for (const entry of entries) {
+        if (entry.quantity > 0) {
+          addFood(entry.food_item, {
+            calories: Math.round(entry.calories / entry.quantity),
+            unit: entry.unit,
+            quantity: 1,
+          });
+        }
+      }
+
+      const updatedToday = getTodayEntries(userId, target.timezone);
+      const confirmMsg = buildLogConfirmation(
+        result.message,
+        entries,
+        updatedToday,
+        target.daily_calories,
+        target.timezone,
+      );
+
+      log(
+        "INFO",
+        `Logged ${entries.length} items for ${userId}: ${entries.map((e) => `${e.food_item} (${e.calories} cal)`).join(", ")}`,
+      );
+
+      await sendText(bot, chatId, confirmMsg);
+      addMessage(userId, "assistant", confirmMsg);
+      break;
+    }
+
+    case "edit_entry": {
+      const updates: Partial<FoodEntry> = {};
+      if (result.updates.food_item !== undefined)
+        updates.food_item = result.updates.food_item;
+      if (result.updates.quantity !== undefined)
+        updates.quantity = result.updates.quantity;
+      if (result.updates.unit !== undefined)
+        updates.unit = result.updates.unit;
+      if (result.updates.calories !== undefined)
+        updates.calories = result.updates.calories;
+      if (result.updates.timestamp !== undefined)
+        updates.timestamp = result.updates.timestamp;
+
+      // If quantity changed but no calories provided, recalculate
+      if (updates.quantity !== undefined && updates.calories === undefined) {
+        const entry = todayEntries[result.entry_number - 1];
+        if (entry && entry.quantity > 0) {
+          updates.calories = Math.round(
+            (entry.calories / entry.quantity) * updates.quantity,
+          );
+        }
+      }
+
+      const updated = updateTodayEntry(
+        userId,
+        result.entry_number,
+        updates,
+        target.timezone,
+      );
+
+      if (updated) {
+        // Update nutrition DB
+        if (updated.quantity > 0) {
+          addFood(updated.food_item, {
+            calories: Math.round(updated.calories / updated.quantity),
+            unit: updated.unit,
+            quantity: 1,
+          });
+        }
+        log("INFO", `Edited #${result.entry_number} for ${userId}: ${updated.food_item} (${updated.calories} cal)`);
+        await sendText(bot, chatId, result.message);
+      } else {
+        await sendText(
+          bot,
+          chatId,
+          `Couldn't find entry #${result.entry_number} in today's log.`,
+        );
+      }
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "remove_entry": {
+      const removed = removeTodayEntry(
+        userId,
+        result.entry_number,
+        target.timezone,
+      );
+      if (removed) {
+        log("INFO", `Removed #${result.entry_number} for ${userId}: ${removed.food_item}`);
+        await sendText(bot, chatId, result.message);
+      } else {
+        await sendText(
+          bot,
+          chatId,
+          `Couldn't find entry #${result.entry_number} in today's log.`,
+        );
+      }
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "deep_question": {
+      await sendText(bot, chatId, "Let me look into that...");
+      try {
+        const logsDir = getLogDirPath(userId);
+        const answer = await askAboutFoodData(
+          userId,
+          logsDir,
+          result.question,
+        );
+        await sendText(bot, chatId, answer);
+        addMessage(userId, "assistant", answer);
+      } catch (err) {
+        log("ERROR", `Claude failed: ${(err as Error).message}`);
+        await sendText(
+          bot,
+          chatId,
+          "Sorry, I couldn't complete that analysis. Try asking differently?",
+        );
+      }
+      break;
+    }
+
+    case "set_target": {
+      setTarget(userId, { daily_calories: result.daily_calories });
+      log("INFO", `Updated target for ${userId}: ${result.daily_calories} cal/day`);
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "set_timezone": {
+      setTarget(userId, { timezone: result.timezone });
+      log("INFO", `Updated timezone for ${userId}: ${result.timezone}`);
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "message": {
+      await sendText(bot, chatId, result.text);
+      addMessage(userId, "assistant", result.text);
+      break;
+    }
+  }
+}
+
+// --- Commands ---
+
+function setupCommands(bot: TelegramBot): void {
+  bot.onText(/\/start/, (msg) => {
+    const userId = String(msg.from?.id);
+    const chatId = msg.chat.id;
+    const sender = msg.from?.username || msg.from?.first_name || "Unknown";
+
+    if (isUserAllowed(userId)) {
+      bot.sendMessage(chatId, "You're already set up! Just tell me what you ate.");
+      return;
+    }
+
+    const { code } = upsertPairingRequest(sender, userId);
+    bot.sendMessage(chatId, buildPairingMessage(userId, code));
+  });
+
+  bot.onText(/\/help/, (msg) => {
+    if (!isUserAllowed(String(msg.from?.id))) return;
+    const help = [
+      "**Food Agent**",
+      "",
+      "Just tell me what you ate in plain language!",
+      'e.g. "had 2 eggs and toast" or "chicken rice for lunch at 1pm"',
+      "",
+      "To edit: \"change #2 to 3 eggs\" or \"remove #1\"",
+      "",
+      "**Commands:**",
+      "/today — Today's food log",
+      "/week — This week's summary",
+      "/undo — Remove last entry",
+      "/target <number> — Set daily calorie target",
+      "/tz <timezone> — Set timezone (e.g. Asia/Kolkata)",
+      "/claude <question> — Ask Claude directly (with access to all your data)",
+      "/help — Show this message",
+    ].join("\n");
+    sendText(bot, msg.chat.id, help);
+  });
+
+  bot.onText(/\/today/, (msg) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const target = getTarget(userId);
+    const entries = getTodayEntries(userId, target.timezone);
+    sendText(
+      bot,
+      msg.chat.id,
+      formatTodaySummary(entries, target.daily_calories, target.timezone),
+    );
+  });
+
+  bot.onText(/\/week/, (msg) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const target = getTarget(userId);
+    const entries = getEntriesForDays(userId, 7);
+    if (entries.length === 0) {
+      sendText(bot, msg.chat.id, "No entries in the last 7 days.");
+      return;
+    }
+
+    const byDate = new Map<string, FoodEntry[]>();
+    for (const e of entries) {
+      const date = new Date(e.timestamp).toLocaleDateString("en-CA", {
+        timeZone: target.timezone,
+      });
+      const arr = byDate.get(date) ?? [];
+      arr.push(e);
+      byDate.set(date, arr);
+    }
+
+    const lines: string[] = ["**This week:**", ""];
+    let weekTotal = 0;
+    for (const [date, dayEntries] of byDate) {
+      const dayTotal = dayEntries.reduce((s, e) => s + e.calories, 0);
+      weekTotal += dayTotal;
+      const pct = Math.round((dayTotal / target.daily_calories) * 100);
+      lines.push(`${date}: ${dayTotal} cal (${pct}%)`);
+    }
+    lines.push("");
+    lines.push(
+      `**Weekly total:** ${weekTotal} cal | **Daily avg:** ${Math.round(weekTotal / byDate.size)} cal`,
+    );
+
+    sendText(bot, msg.chat.id, lines.join("\n"));
+  });
+
+  bot.onText(/\/undo/, (msg) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const removed = removeLastEntry(userId);
+    if (removed) {
+      sendText(
+        bot,
+        msg.chat.id,
+        `Removed: ${removed.food_item} (${removed.quantity} ${removed.unit}) — ${removed.calories} cal`,
+      );
+    } else {
+      sendText(bot, msg.chat.id, "Nothing to undo — log is empty.");
+    }
+  });
+
+  bot.onText(/\/target\s+(\d+)/, (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const cal = parseInt(match![1], 10);
+    if (cal < 500 || cal > 10000) {
+      sendText(bot, msg.chat.id, "Target should be between 500 and 10000 cal.");
+      return;
+    }
+    const updated = setTarget(userId, { daily_calories: cal });
+    sendText(bot, msg.chat.id, `Daily target set to ${updated.daily_calories} cal.`);
+  });
+
+  bot.onText(/\/tz\s+(.+)/, (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const tz = match![1].trim();
+    try {
+      new Date().toLocaleString("en-US", { timeZone: tz });
+    } catch {
+      sendText(
+        bot,
+        msg.chat.id,
+        `Invalid timezone: "${tz}". Use IANA format like Asia/Hong_Kong or Asia/Kolkata.`,
+      );
+      return;
+    }
+    setTarget(userId, { timezone: tz });
+    sendText(bot, msg.chat.id, `Timezone set to ${tz}.`);
+  });
+
+  bot.onText(/\/claude\s+([\s\S]+)/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const question = match![1].trim();
+    if (!question) return;
+
+    await sendText(bot, msg.chat.id, "Asking Claude...");
+    try {
+      const logsDir = getLogDirPath(userId);
+      const answer = await askAboutFoodData(userId, logsDir, question);
+      await sendText(bot, msg.chat.id, answer);
+      addMessage(userId, "assistant", answer);
+    } catch (err) {
+      log("ERROR", `/claude failed: ${(err as Error).message}`);
+      await sendText(
+        bot,
+        msg.chat.id,
+        "Sorry, Claude couldn't process that. Try again?",
+      );
+    }
+  });
+}
+
+// --- Check-ins ---
+
+function startCheckins(bot: TelegramBot, openrouterKey: string): void {
+  log("INFO", `Check-ins enabled: every ${CHECKIN_INTERVAL_MS / 60000} minutes`);
+
+  setInterval(async () => {
+    const users = listApprovedUsers();
+
+    for (const user of users) {
+      const userId = user.senderId;
+      const chatId = parseInt(userId, 10);
+      if (isNaN(chatId)) continue;
+
+      const target = getTarget(userId);
+      if (isQuietHours(target.timezone)) continue;
+
+      const lastCheck = lastCheckinTime.get(userId) ?? 0;
+      const lastMsg = lastUserMessageTime.get(userId) ?? 0;
+      if (lastCheck > 0 && lastCheck > lastMsg) continue;
+      if (Date.now() - lastMsg < MIN_GAP_SINCE_ACTIVITY_MS) continue;
+
+      try {
+        const todayEntries = getTodayEntries(userId, target.timezone);
+        const todayCalories = todayEntries.reduce(
+          (sum, e) => sum + e.calories,
+          0,
+        );
+
+        const context: OrchestratorContext = {
+          todayLog: todayEntries,
+          todayCalories,
+          dailyTarget: target.daily_calories,
+          timezone: target.timezone,
+          knownFoods: loadNutritionDB(),
+          chatHistory: getHistory(userId),
+        };
+
+        const result = await processMessage(
+          `[CHECK-IN] Time for a proactive check-in with the user.`,
+          context,
+          openrouterKey,
+        );
+
+        if (result.type === "message") {
+          await sendText(bot, chatId, result.text);
+          addMessage(userId, "assistant", result.text);
+          lastCheckinTime.set(userId, Date.now());
+          log("INFO", `Check-in sent to ${userId}`);
+        }
+      } catch (err) {
+        log("WARN", `Check-in failed for ${userId}: ${(err as Error).message}`);
+      }
+    }
+  }, CHECKIN_INTERVAL_MS);
+}
+
+// --- Main ---
+
+async function main(): Promise<void> {
+  const token = resolveBotToken();
+  if (!token) {
+    console.error("No Telegram bot token. Set TELEGRAM_BOT_TOKEN in .env or run setup.");
+    process.exit(1);
+  }
+
+  const openrouterKey = resolveOpenRouterKey();
+  if (!openrouterKey) {
+    console.error("No OpenRouter API key. Set OPENROUTER_API_KEY in .env or run setup.");
+    process.exit(1);
+  }
+
+  const bot = new TelegramBot(token, { polling: true });
+  log("INFO", "Food Agent started. Waiting for messages...");
+
+  setupCommands(bot);
+
+  const buffer = new MessageBuffer(DEBOUNCE_MS, (userId, msgs) =>
+    handleMessages(bot, openrouterKey, userId, msgs),
+  );
+
+  bot.on("message", (msg) => {
+    if (!msg.text || !msg.from) return;
+    if (msg.text.startsWith("/")) return;
+
+    const userId = String(msg.from.id);
+    if (!isUserAllowed(userId)) {
+      const sender = msg.from.username || msg.from.first_name || "Unknown";
+      const { code } = upsertPairingRequest(sender, userId);
+      bot.sendMessage(msg.chat.id, buildPairingMessage(userId, code));
+      return;
+    }
+
+    buffer.add(userId, {
+      text: msg.text,
+      messageId: msg.message_id,
+      chatId: msg.chat.id,
+    });
+  });
+
+  startCheckins(bot, openrouterKey);
+
+  process.on("SIGINT", () => {
+    log("INFO", "Shutting down...");
+    bot.stopPolling();
+    process.exit(0);
+  });
+
+  process.on("SIGTERM", () => {
+    log("INFO", "Shutting down...");
+    bot.stopPolling();
+    process.exit(0);
+  });
+}
+
+main().catch((err) => {
+  console.error("Fatal error:", err);
+  process.exit(1);
+});
