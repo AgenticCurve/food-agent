@@ -31,6 +31,7 @@ function userIdToUuid(userId: string): string {
     hash.slice(0, 8),
     hash.slice(8, 12),
     version,
+    variant,
     hash.slice(20, 32),
   ].join("-");
 }
