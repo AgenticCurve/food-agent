@@ -186,6 +186,7 @@ async function handleMessages(
     timezone: target.timezone,
     knownFoods,
     chatHistory: history,
+    logsDir: getLogDirPath(userId),
   };
 
   let result;
@@ -603,6 +604,7 @@ function startCheckins(bot: TelegramBot, openrouterKey: string): void {
           timezone: target.timezone,
           knownFoods: loadNutritionDB(),
           chatHistory: getHistory(userId),
+          logsDir: getLogDirPath(userId),
         };
 
         const result = await processMessage(

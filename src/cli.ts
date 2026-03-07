@@ -107,6 +107,7 @@ async function processInput(
     timezone: target.timezone,
     knownFoods,
     chatHistory: history,
+    logsDir: getLogDirPath(userId),
   };
 
   let result;

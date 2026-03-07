@@ -7,6 +7,8 @@
  * Uses OpenRouter (Gemini Flash) for fast, cheap inference.
  */
 
+import fs from "fs";
+import path from "path";
 import type { FoodEntry, NutritionInfo, ChatMessage } from "./types.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -78,9 +80,15 @@ When the user wants to remove an entry:
 
 RESEARCH & TOOLS:
 - search: When you need current/factual information (nutrition facts, calorie counts, health info, food research), use the search tool. Results come back to you so you can synthesize a helpful response. Always search when unsure about calorie counts for unfamiliar foods.
+- get_entries: Retrieve food log entries for a date range. Use for questions about past days ("what did I eat last Tuesday?", "show me this week's log").
+- grep_logs: Search all food logs for a text pattern. Use for questions like "when did I last have pizza?", "how often do I eat eggs?", "find all entries with chicken".
 - ask_claude: For complex analysis of the user's food data (trends, patterns, weekly summaries, comparisons). Claude has access to all their CSV log files and chat history.
 - tell_claude: For tasks requiring file access, computation, or actions. Claude has full bash access, can read/write files, run scripts, and search the web. Use for generating reports, analyzing data across multiple days, or any task you can't do yourself.
 - Simple questions about today's data: answer directly from the context provided — no need for tools.
+- The "Available dates" list in the context shows which date files exist — use get_entries or grep_logs to read them.
+
+WHEN TO USE CLAUDE:
+Claude is your powerful fallback. If you're unsure how to answer something, if a question is too complex, if you need to compute or analyze data across many days, or if you simply don't know — delegate to Claude via ask_claude or tell_claude. Don't struggle or give a weak answer when Claude can help. Claude has full file access, bash, web search, and can handle anything you can't. When in doubt, ask Claude.
 
 TARGETS:
 - When user wants to change their daily calorie target, use set_target
@@ -322,6 +330,47 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "get_entries",
+      description:
+        "Retrieve food log entries for a date range. Returns CSV data for all entries between start_date and end_date (inclusive). Use for questions about past days, weekly reviews, or comparing periods.",
+      parameters: {
+        type: "object",
+        properties: {
+          start_date: {
+            type: "string",
+            description: "Start date in yyyy-mm-dd format",
+          },
+          end_date: {
+            type: "string",
+            description: "End date in yyyy-mm-dd format",
+          },
+        },
+        required: ["start_date", "end_date"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "grep_logs",
+      description:
+        "Search all food log entries for a text pattern (case-insensitive). Returns matching entries with their dates. Use for finding when a specific food was eaten, how often something appears, etc.",
+      parameters: {
+        type: "object",
+        properties: {
+          pattern: {
+            type: "string",
+            description:
+              "Text to search for (e.g. 'pizza', 'vitamin', 'chicken')",
+          },
+        },
+        required: ["pattern"],
+      },
+    },
+  },
 ];
 
 // --- Types ---
@@ -388,6 +437,7 @@ export interface OrchestratorContext {
   timezone: string;
   knownFoods: Record<string, NutritionInfo>;
   chatHistory: ChatMessage[];
+  logsDir: string;
 }
 
 function buildContextBlock(ctx: OrchestratorContext): string {
@@ -463,7 +513,78 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     parts.push("", "Recent conversation:", historyStr);
   }
 
+  // Show available date files so the LLM knows what data exists
+  if (ctx.logsDir) {
+    const dateFiles = listCsvFiles(ctx.logsDir);
+    if (dateFiles.length > 0) {
+      const dates = dateFiles.map((f) => path.basename(f, ".csv"));
+      parts.push("", `Available dates (${dates.length} files): ${dates.join(", ")}`);
+    }
+  }
+
   return parts.filter((l) => l !== undefined).join("\n");
+}
+
+// --- File helpers for log exploration ---
+
+function listCsvFiles(dir: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const results: string[] = [];
+  function walk(d: string, prefix: string): void {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(path.join(d, entry.name), rel);
+      else if (entry.name.endsWith(".csv")) results.push(rel);
+    }
+  }
+  walk(dir, "");
+  return results.sort();
+}
+
+function readCsvEntries(filePath: string): string[] {
+  if (!fs.existsSync(filePath)) return [];
+  const lines = fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean);
+  return lines.slice(1); // skip header
+}
+
+function getEntriesForDateRange(
+  logsDir: string,
+  startDate: string,
+  endDate: string,
+): string {
+  const files = listCsvFiles(logsDir);
+  const results: string[] = [];
+  for (const f of files) {
+    const datePart = path.basename(f, ".csv"); // yyyy-mm-dd
+    if (datePart >= startDate && datePart <= endDate) {
+      const entries = readCsvEntries(path.join(logsDir, f));
+      if (entries.length > 0) {
+        results.push(`--- ${datePart} ---`);
+        results.push(...entries);
+      }
+    }
+  }
+  return results.length > 0
+    ? `timestamp,food_item,quantity,unit,calories,notes\n${results.join("\n")}`
+    : "No entries found for this date range.";
+}
+
+function grepLogs(logsDir: string, pattern: string): string {
+  const files = listCsvFiles(logsDir);
+  const lower = pattern.toLowerCase();
+  const results: string[] = [];
+  for (const f of files) {
+    const datePart = path.basename(f, ".csv");
+    const entries = readCsvEntries(path.join(logsDir, f));
+    for (const line of entries) {
+      if (line.toLowerCase().includes(lower)) {
+        results.push(`[${datePart}] ${line}`);
+      }
+    }
+  }
+  return results.length > 0
+    ? results.slice(0, 50).join("\n") + (results.length > 50 ? `\n... and ${results.length - 50} more` : "")
+    : `No entries matching "${pattern}".`;
 }
 
 // --- Web search via Perplexity ---
@@ -564,7 +685,7 @@ export async function processMessage(
         throw new Error("LLM returned invalid tool call arguments");
       }
 
-      // --- Search: multi-turn (feed results back to LLM) ---
+      // --- Multi-turn tools (feed results back to LLM) ---
       if (call.function.name === "search") {
         const searchResult = await searchWeb(parsed.query as string);
         messages.push({
@@ -577,7 +698,41 @@ export async function processMessage(
           tool_call_id: call.id,
           content: searchResult,
         });
-        continue; // loop back for LLM to synthesize
+        continue;
+      }
+
+      if (call.function.name === "get_entries") {
+        const result = getEntriesForDateRange(
+          context.logsDir,
+          parsed.start_date as string,
+          parsed.end_date as string,
+        );
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [call],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: result,
+        });
+        continue;
+      }
+
+      if (call.function.name === "grep_logs") {
+        const result = grepLogs(context.logsDir, parsed.pattern as string);
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [call],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: result,
+        });
+        continue;
       }
 
       // --- All other tools: return result to handler ---
