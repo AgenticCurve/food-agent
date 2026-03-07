@@ -3,7 +3,24 @@
  * Usage: npx tsx src/search.ts "your search query"
  *
  * Called by Claude CLI for web research.
+ * All calls are logged to .food-agent/search.log
  */
+
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOG_FILE = path.join(__dirname, "..", ".food-agent", "search.log");
+
+function logSearch(query: string, status: string): void {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] [${status}] ${query}\n`;
+  try {
+    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+    fs.appendFileSync(LOG_FILE, line);
+  } catch {}
+}
 
 const query = process.argv.slice(2).join(" ");
 if (!query) {
@@ -32,6 +49,7 @@ const res = await fetch("https://api.perplexity.ai/chat/completions", {
 
 if (!res.ok) {
   const body = await res.text().catch(() => "");
+  logSearch(query, `ERROR:${res.status}`);
   console.error(`Perplexity API error ${res.status}: ${body.slice(0, 300)}`);
   process.exit(1);
 }
@@ -39,4 +57,6 @@ if (!res.ok) {
 const data = (await res.json()) as {
   choices?: Array<{ message?: { content?: string } }>;
 };
-console.log(data.choices?.[0]?.message?.content ?? "No results found.");
+const result = data.choices?.[0]?.message?.content ?? "No results found.";
+logSearch(query, "OK");
+console.log(result);
