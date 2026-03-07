@@ -21,7 +21,7 @@ import {
 } from "./pairing.js";
 import { MessageBuffer, type BufferedMessage } from "./buffer.js";
 import { processMessage, type OrchestratorContext } from "./orchestrator.js";
-import { askAboutFoodData } from "./claude.js";
+import { askAboutFoodData, clearSession } from "./claude.js";
 import {
   appendEntries,
   removeLastEntry,
@@ -34,7 +34,7 @@ import {
 } from "./food-log.js";
 import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
-import { getHistory, addMessage } from "./history.js";
+import { getHistory, addMessage, clearHistory } from "./history.js";
 import { markdownToTelegramHtml } from "./format.js";
 import type { FoodEntry } from "./types.js";
 
@@ -396,6 +396,7 @@ function setupCommands(bot: TelegramBot): void {
       "/target <number> — Set daily calorie target",
       "/tz <timezone> — Set timezone (e.g. Asia/Kolkata)",
       "/claude <question> — Ask Claude directly (with access to all your data)",
+      "/clear — Clear all memory (chat history + Claude session)",
       "/help — Show this message",
     ].join("\n");
     sendText(bot, msg.chat.id, help);
@@ -492,6 +493,15 @@ function setupCommands(bot: TelegramBot): void {
     }
     setTarget(userId, { timezone: tz });
     sendText(bot, msg.chat.id, `Timezone set to ${tz}.`);
+  });
+
+  bot.onText(/\/clear/, (msg) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    clearHistory(userId);
+    clearSession(userId);
+    log("INFO", `Cleared all memory for ${userId}`);
+    sendText(bot, msg.chat.id, "Memory cleared — chat history and Claude session reset.");
   });
 
   bot.onText(/\/claude\s+([\s\S]+)/, async (msg, match) => {

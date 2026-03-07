@@ -3,6 +3,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { dataPath } from "./paths.js";
+import { nowHKT } from "./food-log.js";
 
 const SESSIONS_DIR = dataPath("sessions");
 
@@ -105,13 +106,67 @@ function runClaude(
   });
 }
 
-function listCsvFiles(dir: string): string[] {
+/** Recursively find all CSV files in a directory tree. */
+function listCsvFilesRecursive(dir: string): string[] {
   if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter((f) => f.endsWith(".csv")).sort();
+  const results: string[] = [];
+
+  function walk(d: string, prefix: string): void {
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(path.join(d, entry.name), rel);
+      } else if (entry.name.endsWith(".csv")) {
+        results.push(rel);
+      }
+    }
+  }
+
+  walk(dir, "");
+  return results.sort();
+}
+
+function buildSystemPrompt(logsDir: string): string {
+  const files = listCsvFilesRecursive(logsDir);
+  const hktNow = nowHKT();
+  const todayDate = hktNow.split("T")[0];
+
+  const filesInfo =
+    files.length > 0
+      ? `Food log CSV files (relative to current directory):\n${files.map((f) => `  ${f}`).join("\n")}`
+      : "(no food log data yet)";
+
+  return [
+    "You are a food and nutrition research assistant.",
+    "",
+    "PURPOSE:",
+    "The user tracks their food intake, calories, medicine, and supplements via a Telegram bot.",
+    "You are called when they need deeper analysis, research, or questions that require looking at their data or the web.",
+    "",
+    "DATA:",
+    `Current date/time (HKT): ${hktNow}`,
+    `Today's date: ${todayDate}`,
+    "",
+    "Directory structure (current working directory is the user's log folder):",
+    "  {yyyy}/{mm}/{yyyy-mm-dd}.csv — one CSV file per date",
+    "",
+    filesInfo,
+    "",
+    "CSV schema: timestamp,food_item,quantity,unit,calories,notes",
+    "- All timestamps are in HKT (Hong Kong Time, UTC+8)",
+    "- Calories can be 0 for non-food items (medicine, supplements, water)",
+    "- Units vary: piece, slice, cup, bowl, plate, gram, ml, serving, tbsp, tsp, pill, tablet, capsule, glass, dose",
+    "",
+    "INSTRUCTIONS:",
+    "- Read CSV files as needed using your file tools",
+    "- If the question requires web search or nutrition research, use your tools",
+    "- Be concise and helpful",
+    "- All times should be in HKT — never mention UTC to the user",
+  ].join("\n");
 }
 
 /**
- * Ask Claude about the user's food data (used by deep_question from orchestrator).
+ * Ask Claude about the user's food data.
  * Claude runs with cwd set to the user's logs directory.
  */
 export async function askAboutFoodData(
@@ -120,27 +175,11 @@ export async function askAboutFoodData(
   question: string,
 ): Promise<string> {
   const sessionId = userIdToUuid(userId);
-  const files = listCsvFiles(logsDir);
 
-  const filesInfo =
-    files.length > 0
-      ? `Food log CSV files in current directory (one per date, YYYY-MM-DD.csv):\n${files.join("\n")}\nSchema: timestamp,food_item,quantity,unit,calories,notes\nAll timestamps are in HKT (Hong Kong Time, +08:00).`
-      : "(no food log data yet)";
+  log("DEBUG", `askAboutFoodData: userId=${userId}, session=${sessionId}`);
 
-  const fullPrompt = [
-    "You are a food and nutrition assistant. The user's food log CSV files are in the current directory.",
-    "",
-    filesInfo,
-    "",
-    "---",
-    "",
-    "Answer the following question. Be concise and helpful.",
-    "Read the CSV files as needed. If the question requires web search or research, use your tools.",
-    "",
-    question,
-  ].join("\n");
-
-  log("DEBUG", `askAboutFoodData: userId=${userId}, session=${sessionId}, files=${files.length}`);
+  const systemPrompt = buildSystemPrompt(logsDir);
+  const fullPrompt = `${systemPrompt}\n\n---\n\n${question}`;
 
   if (isSessionInitialized(userId)) {
     log("DEBUG", `Resuming existing session for ${userId}`);
@@ -167,4 +206,14 @@ export async function askAboutFoodData(
     }
     throw err;
   }
+}
+
+/**
+ * Clear Claude session for a user (removes session marker so next call starts fresh).
+ */
+export function clearSession(userId: string): void {
+  ensureSessionsDir();
+  const marker = path.join(SESSIONS_DIR, userId);
+  if (fs.existsSync(marker)) fs.unlinkSync(marker);
+  log("INFO", `Cleared session marker for ${userId}`);
 }

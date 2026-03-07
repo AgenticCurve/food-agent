@@ -16,7 +16,7 @@ import "dotenv/config";
 import readline from "readline";
 import { resolveOpenRouterKey } from "./settings.js";
 import { processMessage, type OrchestratorContext } from "./orchestrator.js";
-import { askAboutFoodData } from "./claude.js";
+import { askAboutFoodData, clearSession } from "./claude.js";
 import {
   appendEntries,
   removeLastEntry,
@@ -29,7 +29,7 @@ import {
 } from "./food-log.js";
 import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
-import { getHistory, addMessage } from "./history.js";
+import { getHistory, addMessage, clearHistory } from "./history.js";
 import type { FoodEntry } from "./types.js";
 
 // --- Helpers ---
@@ -356,6 +356,7 @@ Food Agent CLI
     /target <number>    Set daily calorie target
     /tz <timezone>      Set timezone
     /claude <question>  Ask Claude directly (with access to all your data)
+    /clear              Clear all memory (chat history + Claude session)
     /help               Show this message
     /quit               Exit
 
@@ -427,6 +428,14 @@ async function startRepl(
 
     if (input === "/undo") {
       handleUndo(userId);
+      rl.prompt();
+      return;
+    }
+
+    if (input === "/clear") {
+      clearHistory(userId);
+      clearSession(userId);
+      print("Memory cleared — chat history and Claude session reset.");
       rl.prompt();
       return;
     }
@@ -546,6 +555,12 @@ async function main(): Promise<void> {
       handleTz(userId, tz);
       return;
     }
+
+    case "clear":
+      clearHistory(userId);
+      clearSession(userId);
+      print("Memory cleared — chat history and Claude session reset.");
+      return;
 
     case "claude": {
       const q = args.slice(1).join(" ");
