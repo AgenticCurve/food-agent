@@ -150,6 +150,7 @@ function buildSystemPrompt(logsDir: string): string {
     "",
     "Directory structure (current working directory is the user's log folder):",
     "  {yyyy}/{mm}/{yyyy-mm-dd}.csv — one CSV file per date",
+    "  chat-history.json — recent chat messages between user and bot (last 50)",
     "",
     filesInfo,
     "",

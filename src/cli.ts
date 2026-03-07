@@ -355,6 +355,7 @@ Food Agent CLI
     /undo               Remove last entry
     /target <number>    Set daily calorie target
     /tz <timezone>      Set timezone
+    /search <query>     Search the web (results saved to chat history)
     /claude <question>  Ask Claude directly (with access to all your data)
     /clear              Clear all memory (chat history + Claude session)
     /help               Show this message
@@ -366,6 +367,7 @@ Food Agent CLI
     npm run cli -- undo
     npm run cli -- log "2 eggs and toast"
     npm run cli -- ask "how many calories this week?"
+    npm run cli -- search "calories in biryani"
     npm run cli -- claude "analyze my eating patterns"
     npm run cli -- --user <telegram-id>   Share data with Telegram bot
 `);
@@ -454,7 +456,51 @@ async function startRepl(
       return;
     }
 
+    const searchMatch = input.match(/^\/search\s+([\s\S]+)$/);
+    if (searchMatch) {
+      const query = searchMatch[1].trim();
+      addMessage(userId, "user", `/search ${query}`);
+      printDim("Searching...");
+      try {
+        const apiKey = process.env.PERPLEXITY_API_KEY || process.env.OPENROUTER_API_KEY;
+        if (!apiKey) throw new Error("No API key for search");
+
+        const isPplx = !!process.env.PERPLEXITY_API_KEY;
+        const url = isPplx
+          ? "https://api.perplexity.ai/chat/completions"
+          : "https://openrouter.ai/api/v1/chat/completions";
+        const model = isPplx ? "sonar-pro" : "perplexity/sonar-pro-search";
+
+        const res = await fetch(url, {
+          method: "POST",
+          signal: AbortSignal.timeout(30_000),
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: "user", content: query }],
+          }),
+        });
+
+        if (!res.ok) throw new Error(`Search API error ${res.status}`);
+
+        const data = (await res.json()) as {
+          choices?: Array<{ message?: { content?: string } }>;
+        };
+        const result = data.choices?.[0]?.message?.content ?? "No results found.";
+        print(result);
+        addMessage(userId, "assistant", `[search: ${query}]\n${result}`);
+      } catch (err) {
+        print(`Error: ${(err as Error).message}`);
+      }
+      rl.prompt();
+      return;
+    }
+
     const claudeMatch = input.match(/^\/claude\s+([\s\S]+)$/);
+
     if (claudeMatch) {
       printDim("Asking Claude...");
       try {
@@ -561,6 +607,36 @@ async function main(): Promise<void> {
       clearSession(userId);
       print("Memory cleared — chat history and Claude session reset.");
       return;
+
+    case "search": {
+      const sq = args.slice(1).join(" ");
+      if (!sq) {
+        console.error('Usage: npm run cli -- search "your query"');
+        process.exit(1);
+      }
+      printDim("Searching...");
+      const apiKey = process.env.PERPLEXITY_API_KEY || openrouterKey;
+      const isPplx = !!process.env.PERPLEXITY_API_KEY;
+      const searchRes = await fetch(
+        isPplx ? "https://api.perplexity.ai/chat/completions" : "https://openrouter.ai/api/v1/chat/completions",
+        {
+          method: "POST",
+          signal: AbortSignal.timeout(30_000),
+          headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: isPplx ? "sonar-pro" : "perplexity/sonar-pro-search",
+            messages: [{ role: "user", content: sq }],
+          }),
+        },
+      );
+      if (!searchRes.ok) { console.error(`Search failed: ${searchRes.status}`); process.exit(1); }
+      const searchData = (await searchRes.json()) as { choices?: Array<{ message?: { content?: string } }> };
+      const searchResult = searchData.choices?.[0]?.message?.content ?? "No results.";
+      print(searchResult);
+      addMessage(userId, "user", `/search ${sq}`);
+      addMessage(userId, "assistant", `[search: ${sq}]\n${searchResult}`);
+      return;
+    }
 
     case "claude": {
       const q = args.slice(1).join(" ");

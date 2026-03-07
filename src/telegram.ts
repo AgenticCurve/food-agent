@@ -395,6 +395,7 @@ function setupCommands(bot: TelegramBot): void {
       "/undo — Remove last entry",
       "/target <number> — Set daily calorie target",
       "/tz <timezone> — Set timezone (e.g. Asia/Kolkata)",
+      "/search <query> — Search the web (results saved to chat history)",
       "/claude <question> — Ask Claude directly (with access to all your data)",
       "/clear — Clear all memory (chat history + Claude session)",
       "/help — Show this message",
@@ -493,6 +494,47 @@ function setupCommands(bot: TelegramBot): void {
     }
     setTarget(userId, { timezone: tz });
     sendText(bot, msg.chat.id, `Timezone set to ${tz}.`);
+  });
+
+  bot.onText(/\/search\s+([\s\S]+)/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const query = match![1].trim();
+    if (!query) return;
+
+    addMessage(userId, "user", `/search ${query}`);
+    await sendText(bot, msg.chat.id, "Searching...");
+    try {
+      const apiKey = process.env.PERPLEXITY_API_KEY;
+      if (!apiKey) throw new Error("PERPLEXITY_API_KEY not set");
+
+      const res = await fetch("https://api.perplexity.ai/chat/completions", {
+        method: "POST",
+        signal: AbortSignal.timeout(30_000),
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "sonar-pro",
+          messages: [{ role: "user", content: query }],
+        }),
+      });
+
+      if (!res.ok) throw new Error(`Perplexity API error ${res.status}`);
+
+      const data = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const result = data.choices?.[0]?.message?.content ?? "No results found.";
+
+      await sendText(bot, msg.chat.id, result);
+      addMessage(userId, "assistant", `[search: ${query}]\n${result}`);
+      log("INFO", `Search for ${userId}: "${query}"`);
+    } catch (err) {
+      log("ERROR", `/search failed: ${(err as Error).message}`);
+      await sendText(bot, msg.chat.id, "Search failed. Try again?");
+    }
   });
 
   bot.onText(/\/clear/, (msg) => {
