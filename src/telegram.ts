@@ -552,12 +552,13 @@ function setupCommands(bot: TelegramBot): void {
     const question = match![1].trim();
     if (!question) return;
 
+    addMessage(userId, "user", `/claude ${question}`);
     await sendText(bot, msg.chat.id, "Asking Claude...");
     try {
       const logsDir = getLogDirPath(userId);
       const answer = await askAboutFoodData(userId, logsDir, question);
       await sendText(bot, msg.chat.id, answer);
-      addMessage(userId, "assistant", answer);
+      addMessage(userId, "assistant", `[claude]\n${answer}`);
     } catch (err) {
       log("ERROR", `/claude failed: ${(err as Error).message}`);
       await sendText(
