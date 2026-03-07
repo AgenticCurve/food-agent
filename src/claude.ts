@@ -3,6 +3,7 @@ import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { dataPath } from "./paths.js";
+import { PROJECT_ROOT } from "./paths.js";
 import { nowHKT } from "./food-log.js";
 
 const SESSIONS_DIR = dataPath("sessions");
@@ -157,9 +158,16 @@ function buildSystemPrompt(logsDir: string): string {
     "- Calories can be 0 for non-food items (medicine, supplements, water)",
     "- Units vary: piece, slice, cup, bowl, plate, gram, ml, serving, tbsp, tsp, pill, tablet, capsule, glass, dose",
     "",
+    "WEB SEARCH:",
+    `To search the web, run: npx tsx ${PROJECT_ROOT}/src/search.ts "your search query"`,
+    "This calls Perplexity API (sonar-pro) and returns results. Use it for:",
+    "- Nutrition research (calorie counts, macros, health info)",
+    "- Food-related questions the data can't answer",
+    "- Any question that needs current/factual information from the web",
+    "",
     "INSTRUCTIONS:",
     "- Read CSV files as needed using your file tools",
-    "- If the question requires web search or nutrition research, use your tools",
+    "- Use the search tool above when you need web information",
     "- Be concise and helpful",
     "- All times should be in HKT — never mention UTC to the user",
   ].join("\n");
