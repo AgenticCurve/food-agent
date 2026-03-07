@@ -223,17 +223,15 @@ async function processInput(
       break;
     }
 
-    case "deep_question": {
+    case "ask_claude":
+    case "tell_claude": {
+      const prompt = result.type === "ask_claude" ? result.question : result.instruction;
       printDim("Thinking...");
       try {
         const logsDir = getLogDirPath(userId);
-        const answer = await askAboutFoodData(
-          userId,
-          logsDir,
-          result.question,
-        );
+        const answer = await askAboutFoodData(userId, logsDir, prompt);
         print(answer);
-        addMessage(userId, "assistant", answer);
+        addMessage(userId, "assistant", `[claude]\n${answer}`);
       } catch (err) {
         print(`Error: ${(err as Error).message}`);
       }

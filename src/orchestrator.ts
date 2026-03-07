@@ -2,8 +2,8 @@
  * LLM orchestrator for food-agent.
  *
  * Classifies user intent, parses food input, cross-questions for
- * missing info, handles edits to existing entries, and routes
- * complex queries to Claude CLI.
+ * missing info, handles edits to existing entries, searches the web,
+ * and routes complex queries to Claude CLI.
  * Uses OpenRouter (Gemini Flash) for fast, cheap inference.
  */
 
@@ -11,6 +11,7 @@ import type { FoodEntry, NutritionInfo, ChatMessage } from "./types.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3.1-flash-lite-preview";
+const MAX_TOOL_ROUNDS = 3;
 
 function log(level: string, message: string): void {
   const ts = new Date().toISOString();
@@ -75,14 +76,21 @@ When the user wants to remove an entry:
 - Use remove_entry with the entry number
 - The user might say "remove #3", "delete the toast", "I didn't actually have the biryani"
 
-QUESTIONS:
-- Simple questions about today/recent data: answer directly from the context provided
-- Complex analysis (weekly trends, patterns, detailed nutrition research): use deep_question to route to a research assistant with web search
-- When using deep_question, include full context in the question so the research assistant has everything it needs
+RESEARCH & TOOLS:
+- search: When you need current/factual information (nutrition facts, calorie counts, health info, food research), use the search tool. Results come back to you so you can synthesize a helpful response. Always search when unsure about calorie counts for unfamiliar foods.
+- ask_claude: For complex analysis of the user's food data (trends, patterns, weekly summaries, comparisons). Claude has access to all their CSV log files and chat history.
+- tell_claude: For tasks requiring file access, computation, or actions. Claude has full bash access, can read/write files, run scripts, and search the web. Use for generating reports, analyzing data across multiple days, or any task you can't do yourself.
+- Simple questions about today's data: answer directly from the context provided — no need for tools.
 
 TARGETS:
 - When user wants to change their daily calorie target, use set_target
 - When user wants to change timezone, use set_timezone
+
+DATA STRUCTURE:
+The user's food logs are stored as CSV files organized by date:
+  logs/{userId}/{yyyy}/{mm}/{yyyy-mm-dd}.csv
+  Schema: timestamp,food_item,quantity,unit,calories,notes
+  chat-history.json contains the recent conversation history.
 
 CHECK-INS:
 - When you see [CHECK-IN], generate a brief, natural check-in message
@@ -121,11 +129,11 @@ const TOOLS = [
                 unit: {
                   type: "string",
                   description:
-                    "Unit: piece, slice, cup, bowl, plate, gram, ml, serving, tbsp, tsp",
+                    "Unit: piece, slice, cup, bowl, plate, gram, ml, serving, tbsp, tsp, pill, tablet, capsule, glass, dose",
                 },
                 calories: {
                   type: "number",
-                  description: "Total calories for this quantity",
+                  description: "Total calories for this quantity (0 for medicine/supplements)",
                 },
                 notes: {
                   type: "string",
@@ -138,7 +146,7 @@ const TOOLS = [
           timestamp: {
             type: "string",
             description:
-              "ISO 8601 timestamp. Only set if user specified a time, otherwise omit for current time.",
+              "ISO 8601 timestamp with +08:00 offset. Only set if user specified a time, otherwise omit for current time.",
           },
           message: {
             type: "string",
@@ -183,7 +191,7 @@ const TOOLS = [
           timestamp: {
             type: "string",
             description:
-              "Updated timestamp as ISO 8601 with timezone offset (e.g. 2026-03-07T13:00:00+08:00). Use to correct when the user ate.",
+              "Updated timestamp as ISO 8601 with +08:00 offset. Use to correct when the user ate.",
           },
           message: {
             type: "string",
@@ -219,19 +227,55 @@ const TOOLS = [
   {
     type: "function" as const,
     function: {
-      name: "deep_question",
+      name: "search",
       description:
-        "Route complex questions to a research assistant with web search. Use for nutrition research, weekly analysis, trend spotting, or any question requiring deeper analysis beyond what's in the provided context.",
+        "Search the web for current information via Perplexity. Use for nutrition facts, calorie counts for unfamiliar foods, health research, or any question needing up-to-date data. Results come back to you to synthesize into a response.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The search query",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "ask_claude",
+      description:
+        "Ask Claude for analysis or information. Claude has access to all the user's food log CSV files, chat history, and web search. Use for complex questions about eating patterns, trends, detailed nutritional analysis, or research that requires reading the data files.",
       parameters: {
         type: "object",
         properties: {
           question: {
             type: "string",
             description:
-              "The full question with context for the research assistant",
+              "The question for Claude, including any relevant context",
           },
         },
         required: ["question"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "tell_claude",
+      description:
+        "Instruct Claude to perform an action. Claude has full bash access, can read/write files, run scripts, and search the web. Use for tasks like: generating reports across multiple days, creating summaries, modifying data, or any task requiring file access or computation that you cannot do yourself.",
+      parameters: {
+        type: "object",
+        properties: {
+          instruction: {
+            type: "string",
+            description: "What Claude should do, with full context",
+          },
+        },
+        required: ["instruction"],
       },
     },
   },
@@ -308,22 +352,25 @@ export type OrchestratorResult =
       message: string;
     }
   | { type: "remove_entry"; entry_number: number; message: string }
-  | { type: "deep_question"; question: string }
+  | { type: "ask_claude"; question: string }
+  | { type: "tell_claude"; instruction: string }
   | { type: "set_target"; daily_calories: number; message: string }
   | { type: "set_timezone"; timezone: string; message: string }
   | { type: "message"; text: string };
 
+interface ToolCall {
+  id: string;
+  type: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
 interface ChatChoice {
   message: {
     content: string | null;
-    tool_calls?: Array<{
-      id: string;
-      type: string;
-      function: {
-        name: string;
-        arguments: string;
-      };
-    }>;
+    tool_calls?: ToolCall[];
   };
   finish_reason: string;
 }
@@ -419,6 +466,42 @@ function buildContextBlock(ctx: OrchestratorContext): string {
   return parts.filter((l) => l !== undefined).join("\n");
 }
 
+// --- Web search via Perplexity ---
+
+async function searchWeb(query: string): Promise<string> {
+  const apiKey = process.env.PERPLEXITY_API_KEY;
+  if (!apiKey) return "Search unavailable: PERPLEXITY_API_KEY not set.";
+
+  log("DEBUG", `Searching: "${query}"`);
+
+  try {
+    const res = await fetch("https://api.perplexity.ai/chat/completions", {
+      method: "POST",
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "sonar-pro",
+        messages: [{ role: "user", content: query }],
+      }),
+    });
+
+    if (!res.ok) return `Search failed (${res.status}).`;
+
+    const data = (await res.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const result = data.choices?.[0]?.message?.content ?? "No results found.";
+    log("DEBUG", `Search result: ${result.length} chars`);
+    return result;
+  } catch (err) {
+    log("ERROR", `Search error: ${(err as Error).message}`);
+    return "Search failed.";
+  }
+}
+
 // --- Main ---
 
 export async function processMessage(
@@ -434,123 +517,158 @@ export async function processMessage(
     `Calling OpenRouter: model=${MODEL}, input=${fullUserContent.length} chars`,
   );
 
-  const res = await fetch(OPENROUTER_URL, {
-    method: "POST",
-    signal: AbortSignal.timeout(30_000),
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: fullUserContent },
-      ],
-      tools: TOOLS,
-      tool_choice: "auto",
-    }),
-  });
+  // Build message array for multi-turn tool calling
+  const messages: Array<Record<string, unknown>> = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: fullUserContent },
+  ];
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    log("ERROR", `OpenRouter ${res.status}: ${body.slice(0, 500)}`);
-    throw new Error(
-      `OpenRouter API error ${res.status}: ${body.slice(0, 300)}`,
-    );
-  }
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const res = await fetch(OPENROUTER_URL, {
+      method: "POST",
+      signal: AbortSignal.timeout(30_000),
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        messages,
+        tools: TOOLS,
+        tool_choice: "auto",
+      }),
+    });
 
-  const data = (await res.json()) as ChatResponse;
-  const choice = data.choices?.[0];
-
-  if (!choice) {
-    throw new Error("OpenRouter returned empty choices array");
-  }
-
-  const calls = choice.message.tool_calls;
-  if (calls && calls.length > 0) {
-    const call = calls[0];
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(call.function.arguments);
-    } catch {
-      throw new Error("LLM returned invalid tool call arguments");
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log("ERROR", `OpenRouter ${res.status}: ${body.slice(0, 500)}`);
+      throw new Error(
+        `OpenRouter API error ${res.status}: ${body.slice(0, 300)}`,
+      );
     }
 
-    switch (call.function.name) {
-      case "log_food": {
-        const entries = parsed.entries as Array<{
-          food_item: string;
-          quantity: number;
-          unit: string;
-          calories: number;
-          notes?: string;
-        }>;
-        return {
-          type: "log_food",
-          entries,
-          timestamp: (parsed.timestamp as string) || undefined,
-          message: (parsed.message as string) || "Logged!",
-        };
+    const data = (await res.json()) as ChatResponse;
+    const choice = data.choices?.[0];
+
+    if (!choice) {
+      throw new Error("OpenRouter returned empty choices array");
+    }
+
+    const calls = choice.message.tool_calls;
+    if (calls && calls.length > 0) {
+      const call = calls[0];
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(call.function.arguments);
+      } catch {
+        throw new Error("LLM returned invalid tool call arguments");
       }
 
-      case "edit_entry": {
-        const updates: Record<string, unknown> = {};
-        if (parsed.food_item !== undefined) updates.food_item = parsed.food_item;
-        if (parsed.quantity !== undefined) updates.quantity = parsed.quantity;
-        if (parsed.unit !== undefined) updates.unit = parsed.unit;
-        if (parsed.calories !== undefined) updates.calories = parsed.calories;
-        if (parsed.timestamp !== undefined) {
-          updates.timestamp = parsed.timestamp as string;
+      // --- Search: multi-turn (feed results back to LLM) ---
+      if (call.function.name === "search") {
+        const searchResult = await searchWeb(parsed.query as string);
+        messages.push({
+          role: "assistant",
+          content: null,
+          tool_calls: [call],
+        });
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: searchResult,
+        });
+        continue; // loop back for LLM to synthesize
+      }
+
+      // --- All other tools: return result to handler ---
+      switch (call.function.name) {
+        case "log_food": {
+          const entries = parsed.entries as Array<{
+            food_item: string;
+            quantity: number;
+            unit: string;
+            calories: number;
+            notes?: string;
+          }>;
+          return {
+            type: "log_food",
+            entries,
+            timestamp: (parsed.timestamp as string) || undefined,
+            message: (parsed.message as string) || "Logged!",
+          };
         }
 
-        return {
-          type: "edit_entry",
-          entry_number: parsed.entry_number as number,
-          updates: updates as {
-            food_item?: string;
-            quantity?: number;
-            unit?: string;
-            calories?: number;
-            timestamp?: string;
-          },
-          message: (parsed.message as string) || "Updated!",
-        };
+        case "edit_entry": {
+          const updates: Record<string, unknown> = {};
+          if (parsed.food_item !== undefined) updates.food_item = parsed.food_item;
+          if (parsed.quantity !== undefined) updates.quantity = parsed.quantity;
+          if (parsed.unit !== undefined) updates.unit = parsed.unit;
+          if (parsed.calories !== undefined) updates.calories = parsed.calories;
+          if (parsed.timestamp !== undefined) {
+            updates.timestamp = parsed.timestamp as string;
+          }
+
+          return {
+            type: "edit_entry",
+            entry_number: parsed.entry_number as number,
+            updates: updates as {
+              food_item?: string;
+              quantity?: number;
+              unit?: string;
+              calories?: number;
+              timestamp?: string;
+            },
+            message: (parsed.message as string) || "Updated!",
+          };
+        }
+
+        case "remove_entry":
+          return {
+            type: "remove_entry",
+            entry_number: parsed.entry_number as number,
+            message: (parsed.message as string) || "Removed!",
+          };
+
+        case "ask_claude":
+          return {
+            type: "ask_claude",
+            question: parsed.question as string,
+          };
+
+        case "tell_claude":
+          return {
+            type: "tell_claude",
+            instruction: parsed.instruction as string,
+          };
+
+        case "set_target":
+          return {
+            type: "set_target",
+            daily_calories: parsed.daily_calories as number,
+            message: (parsed.message as string) || "Target updated!",
+          };
+
+        case "set_timezone":
+          return {
+            type: "set_timezone",
+            timezone: parsed.timezone as string,
+            message: (parsed.message as string) || "Timezone updated!",
+          };
       }
-
-      case "remove_entry":
-        return {
-          type: "remove_entry",
-          entry_number: parsed.entry_number as number,
-          message: (parsed.message as string) || "Removed!",
-        };
-
-      case "deep_question":
-        return {
-          type: "deep_question",
-          question: parsed.question as string,
-        };
-
-      case "set_target":
-        return {
-          type: "set_target",
-          daily_calories: parsed.daily_calories as number,
-          message: (parsed.message as string) || "Target updated!",
-        };
-
-      case "set_timezone":
-        return {
-          type: "set_timezone",
-          timezone: parsed.timezone as string,
-          message: (parsed.message as string) || "Timezone updated!",
-        };
     }
+
+    // No tool calls — plain text response
+    return {
+      type: "message",
+      text:
+        choice.message.content ??
+        "Hey! Tell me what you ate and I'll log it for you.",
+    };
   }
 
+  // Exceeded max tool rounds
   return {
     type: "message",
-    text:
-      choice.message.content ??
-      "Hey! Tell me what you ate and I'll log it for you.",
+    text: "I wasn't able to complete that. Could you try rephrasing?",
   };
 }

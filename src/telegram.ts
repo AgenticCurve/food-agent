@@ -316,23 +316,21 @@ async function handleMessages(
       break;
     }
 
-    case "deep_question": {
+    case "ask_claude":
+    case "tell_claude": {
+      const prompt = result.type === "ask_claude" ? result.question : result.instruction;
       await sendText(bot, chatId, "Let me look into that...");
       try {
         const logsDir = getLogDirPath(userId);
-        const answer = await askAboutFoodData(
-          userId,
-          logsDir,
-          result.question,
-        );
+        const answer = await askAboutFoodData(userId, logsDir, prompt);
         await sendText(bot, chatId, answer);
-        addMessage(userId, "assistant", answer);
+        addMessage(userId, "assistant", `[claude]\n${answer}`);
       } catch (err) {
         log("ERROR", `Claude failed: ${(err as Error).message}`);
         await sendText(
           bot,
           chatId,
-          "Sorry, I couldn't complete that analysis. Try asking differently?",
+          "Sorry, I couldn't complete that. Try asking differently?",
         );
       }
       break;
