@@ -44,6 +44,8 @@ import {
   updateSleepEntry,
   removeSleepEntry,
 } from "./sleep-log.js";
+import { appendNote, updateNote, removeNote } from "./notes-log.js";
+import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 
 // --- Logging ---
@@ -281,6 +283,26 @@ async function handleMessages(
       break;
     }
 
+    case "log_note": {
+      appendNote(userId, { timestamp: nowHKT(), note: result.note });
+      log("INFO", `Saved note for ${userId}: "${result.note.slice(0, 50)}"`);
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "log_weight": {
+      appendWeight(userId, {
+        timestamp: nowHKT(),
+        weight_kg: result.weight_kg,
+        notes: result.notes || "",
+      });
+      log("INFO", `Logged weight for ${userId}: ${result.weight_kg} kg`);
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
     case "edit_entry": {
       const editDate =
         result.date ||
@@ -288,29 +310,34 @@ async function handleMessages(
 
       if (result.log_type === "sleep") {
         const updates = result.updates as Partial<SleepEntry>;
-        const updated = updateSleepEntry(
-          userId,
-          editDate,
-          result.entry_number,
-          updates,
-        );
+        const updated = updateSleepEntry(userId, editDate, result.entry_number, updates);
         if (updated) {
           log("INFO", `Edited sleep #${result.entry_number} (${editDate}) for ${userId}`);
           await sendText(bot, chatId, result.message);
         } else {
-          await sendText(
-            bot,
-            chatId,
-            `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`,
-          );
+          await sendText(bot, chatId, `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`);
+        }
+      } else if (result.log_type === "notes") {
+        const updated = updateNote(userId, result.entry_number, result.updates as { note?: string });
+        if (updated) {
+          log("INFO", `Edited note #${result.entry_number} for ${userId}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(bot, chatId, `Couldn't find note #${result.entry_number}.`);
+        }
+      } else if (result.log_type === "weight") {
+        const updated = updateWeight(userId, result.entry_number, result.updates as { weight_kg?: number; notes?: string });
+        if (updated) {
+          log("INFO", `Edited weight #${result.entry_number} for ${userId}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(bot, chatId, `Couldn't find weight entry #${result.entry_number}.`);
         }
       } else {
         const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
-
         const updated = result.date
           ? updateEntryByDate(userId, editDate, result.entry_number, updates)
           : updateTodayEntry(userId, result.entry_number, updates, target.timezone);
-
         if (updated) {
           if (updated.quantity > 0) {
             addFood(updated.food_item, {
@@ -322,11 +349,7 @@ async function handleMessages(
           log("INFO", `Edited #${result.entry_number} (${editDate}) for ${userId}: ${updated.food_item} (${updated.calories} cal)`);
           await sendText(bot, chatId, result.message);
         } else {
-          await sendText(
-            bot,
-            chatId,
-            `Couldn't find entry #${result.entry_number} on ${editDate}.`,
-          );
+          await sendText(bot, chatId, `Couldn't find entry #${result.entry_number} on ${editDate}.`);
         }
       }
       addMessage(userId, "assistant", result.message);
@@ -344,26 +367,33 @@ async function handleMessages(
           log("INFO", `Removed sleep #${result.entry_number} (${removeDate}) for ${userId}`);
           await sendText(bot, chatId, result.message);
         } else {
-          await sendText(
-            bot,
-            chatId,
-            `Couldn't find sleep entry #${result.entry_number} on ${removeDate}.`,
-          );
+          await sendText(bot, chatId, `Couldn't find sleep entry #${result.entry_number} on ${removeDate}.`);
+        }
+      } else if (result.log_type === "notes") {
+        const removed = removeNote(userId, result.entry_number);
+        if (removed) {
+          log("INFO", `Removed note #${result.entry_number} for ${userId}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(bot, chatId, `Couldn't find note #${result.entry_number}.`);
+        }
+      } else if (result.log_type === "weight") {
+        const removed = removeWeight(userId, result.entry_number);
+        if (removed) {
+          log("INFO", `Removed weight #${result.entry_number} for ${userId}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(bot, chatId, `Couldn't find weight entry #${result.entry_number}.`);
         }
       } else {
         const removed = result.date
           ? removeEntryByDate(userId, removeDate, result.entry_number)
           : removeTodayEntry(userId, result.entry_number, target.timezone);
-
         if (removed) {
           log("INFO", `Removed #${result.entry_number} (${removeDate}) for ${userId}: ${removed.food_item}`);
           await sendText(bot, chatId, result.message);
         } else {
-          await sendText(
-            bot,
-            chatId,
-            `Couldn't find entry #${result.entry_number} on ${removeDate}.`,
-          );
+          await sendText(bot, chatId, `Couldn't find entry #${result.entry_number} on ${removeDate}.`);
         }
       }
       addMessage(userId, "assistant", result.message);

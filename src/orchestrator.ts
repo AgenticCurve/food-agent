@@ -9,12 +9,23 @@
 
 import fs from "fs";
 import path from "path";
-import type { FoodEntry, NutritionInfo, ChatMessage, SleepEntry } from "./types.js";
+import type { FoodEntry, NutritionInfo, ChatMessage, SleepEntry, NoteEntry, WeightEntry } from "./types.js";
 import {
   getSleepEntriesForDateRange,
   grepSleepLogs,
   listSleepCsvFiles,
 } from "./sleep-log.js";
+import {
+  getRecentNotes,
+  getNotesForDateRange,
+  grepNotes,
+} from "./notes-log.js";
+import {
+  getLatestWeight,
+  getAllWeights,
+  getWeightsForDateRange,
+  grepWeights,
+} from "./weight-log.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3.1-flash-lite-preview";
@@ -93,15 +104,17 @@ TOOLS — WHEN AND HOW TO USE:
 
 1. log_food — Log food/medicine/supplement entries. Only call when you have complete info (item, quantity, calories).
 2. log_sleep — Log a sleep entry. Needs: type (night/nap), start_time, end_time, quality (1-10). Optional: notes.
-3. edit_entry — Edit any entry by number. Set log_type="food" or "sleep". Set date (yyyy-mm-dd) for past entries, omit for today.
-4. remove_entry — Remove any entry by number. Same log_type and date params as edit_entry.
-5. search — Web search via Perplexity. Use for nutrition facts, calorie counts, health info, current prices, or anything you're unsure about. Results come back to you — synthesize them into a helpful response.
-6. get_entries — Retrieve CSV entries for a date range. Set log_type="food" or "sleep". Results come back to you.
-7. grep_logs — Search all logs for a text pattern (case-insensitive). Set log_type="food" or "sleep". Use for "when did I last eat X?" or "how often do I nap?" etc.
-8. ask_claude — Ask Claude for analysis or information. Use for complex questions about trends, patterns, comparisons, or anything requiring deep data analysis.
-9. tell_claude — Instruct Claude to perform an action. Claude has full bash access, file read/write, web search. Use for reports, multi-day analysis, computation, or anything you can't do yourself.
-10. set_target — Change the user's daily calorie target.
-11. set_timezone — Change the user's timezone.
+3. log_note — Save a note to the user's notes log. Use when they explicitly ask to save/record a note, reminder, or observation.
+4. log_weight — Record the user's weight in kg. Convert from lbs if needed (1 lb = 0.4536 kg). Optional notes.
+5. edit_entry — Edit any entry by number. Set log_type to "food", "sleep", "notes", or "weight". Set date (yyyy-mm-dd) for past food/sleep entries, omit for today. For notes/weight, date is not needed (single file, global entry numbers).
+6. remove_entry — Remove any entry by number. Same log_type and date params as edit_entry.
+7. search — Web search via Perplexity. Use for nutrition facts, calorie counts, health info, current prices, or anything you're unsure about. Results come back to you — synthesize them into a helpful response.
+8. get_entries — Retrieve CSV entries for a date range. Set log_type to "food", "sleep", "notes", or "weight". Results come back to you.
+9. grep_logs — Search all logs for a text pattern (case-insensitive). Set log_type to "food", "sleep", "notes", or "weight". Use for "when did I last eat X?" or "find notes about..." etc.
+10. ask_claude — Ask Claude for analysis or information. Use for complex questions about trends, patterns, comparisons, or anything requiring deep data analysis.
+11. tell_claude — Instruct Claude to perform an action. Claude has full bash access, file read/write, web search. Use for reports, multi-day analysis, computation, or anything you can't do yourself.
+12. set_target — Change the user's daily calorie target.
+13. set_timezone — Change the user's timezone.
 
 CHOOSING THE RIGHT TOOL:
 - Today's data is shown in context — answer simple questions directly, no tool needed.
@@ -109,6 +122,16 @@ CHOOSING THE RIGHT TOOL:
 - Unsure about calorie counts → search
 - Complex multi-day analysis → ask_claude or tell_claude
 - Claude is your powerful fallback. If stuck, unsure, or the question is too complex — delegate to Claude. Don't struggle or give a weak answer when Claude can help. Claude has full file access, bash, web search, and can handle anything you can't. When in doubt, ask Claude.
+
+NOTES:
+- Notes are a general-purpose log. The user might say "note: doctor appointment next week" or "save a note about switching to brown rice"
+- Only use log_note when the user explicitly asks to save/record something — don't automatically create notes
+- Notes are stored in a single CSV file (notes.csv), not per date. Entry numbers are global.
+
+WEIGHT:
+- When the user reports their weight, use log_weight. Accept kg or lbs (convert lbs to kg).
+- The context shows the latest weight and recent trend if available
+- Weight is stored in a single CSV file (weight.csv). Entry numbers are global.
 
 SLEEP TRACKING:
 - Users can log their sleep: when they went to bed, when they woke up, and how they'd rate it
@@ -234,6 +257,55 @@ const TOOLS = [
   {
     type: "function" as const,
     function: {
+      name: "log_note",
+      description:
+        "Save a note to the user's notes log. Use when the user explicitly asks to save/record a note or reminder.",
+      parameters: {
+        type: "object",
+        properties: {
+          note: {
+            type: "string",
+            description: "The note text to save",
+          },
+          message: {
+            type: "string",
+            description: "Brief confirmation message for the user",
+          },
+        },
+        required: ["note", "message"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "log_weight",
+      description:
+        "Record the user's weight. Use when they report their weight (e.g. 'I weigh 86.6 kg', 'weight today is 185 lbs').",
+      parameters: {
+        type: "object",
+        properties: {
+          weight_kg: {
+            type: "number",
+            description:
+              "Weight in kilograms. Convert from lbs if needed (1 lb = 0.4536 kg).",
+          },
+          notes: {
+            type: "string",
+            description: "Optional notes (e.g. 'after breakfast', 'morning weigh-in')",
+          },
+          message: {
+            type: "string",
+            description: "Brief confirmation message for the user",
+          },
+        },
+        required: ["weight_kg", "message"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "edit_entry",
       description:
         "Edit an existing entry by its number (#1, #2, etc.). Works for any date and both food and sleep logs. For past dates, use get_entries first to see the entries, then ALWAYS ask the user for explicit confirmation before editing. For food: use food_item, quantity, unit, calories, timestamp. For sleep: use sleep_type, start_time, end_time, quality, notes.",
@@ -242,7 +314,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep"],
+            enum: ["food", "sleep", "notes", "weight"],
             description: "Which log to edit (default: food)",
           },
           date: {
@@ -317,7 +389,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep"],
+            enum: ["food", "sleep", "notes", "weight"],
             description: "Which log to remove from (default: food)",
           },
           date: {
@@ -447,7 +519,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep"],
+            enum: ["food", "sleep", "notes", "weight"],
             description: "Which log to query (default: food)",
           },
           start_date: {
@@ -474,7 +546,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep"],
+            enum: ["food", "sleep", "notes", "weight"],
             description: "Which log to search (default: food)",
           },
           pattern: {
@@ -515,9 +587,11 @@ export type OrchestratorResult =
       };
       message: string;
     }
+  | { type: "log_note"; note: string; message: string }
+  | { type: "log_weight"; weight_kg: number; notes?: string; message: string }
   | {
       type: "edit_entry";
-      log_type: "food" | "sleep";
+      log_type: "food" | "sleep" | "notes" | "weight";
       date?: string;
       entry_number: number;
       updates: Record<string, unknown>;
@@ -525,7 +599,7 @@ export type OrchestratorResult =
     }
   | {
       type: "remove_entry";
-      log_type: "food" | "sleep";
+      log_type: "food" | "sleep" | "notes" | "weight";
       date?: string;
       entry_number: number;
       message: string;
@@ -728,6 +802,37 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     parts.push("", "Raw sleep CSV (today):", todaySleepCsv);
   }
 
+  // --- Latest weight ---
+  const latestWeight = getLatestWeight(ctx.userId);
+  if (latestWeight) {
+    const weightDate = latestWeight.timestamp.slice(0, 10);
+    parts.push(
+      "",
+      `=== WEIGHT ===`,
+      `Latest: ${latestWeight.weight_kg} kg (${weightDate})${latestWeight.notes ? ` — ${latestWeight.notes}` : ""}`,
+    );
+    // Show recent trend (last 5)
+    const allWeights = getAllWeights(ctx.userId);
+    if (allWeights.length > 1) {
+      const recent = allWeights.slice(-5);
+      parts.push(
+        `Recent: ${recent.map((w) => `${w.weight_kg}kg (${w.timestamp.slice(5, 10)})`).join(", ")}`,
+      );
+    }
+  }
+
+  // --- Recent notes ---
+  const recentNotes = getRecentNotes(ctx.userId, 5);
+  if (recentNotes.length > 0) {
+    parts.push(
+      "",
+      "=== RECENT NOTES ===",
+      ...recentNotes.map(
+        (n) => `  [${n.timestamp.slice(0, 10)}] ${n.note}`,
+      ),
+    );
+  }
+
   if (knownFoodsStr) {
     parts.push("", "Known foods (use these calorie values):", knownFoodsStr);
   }
@@ -742,10 +847,14 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     `User log directory: logs/${ctx.userId}/`,
     dirTree,
     "",
-    "Food CSV schema: timestamp,food_item,quantity,unit,calories,notes",
-    "Sleep CSV schema: date,type,start_time,end_time,duration_hours,quality,notes",
+    "CSV schemas:",
+    "  Food: timestamp,food_item,quantity,unit,calories,notes",
+    "  Sleep: date,type,start_time,end_time,duration_hours,quality,notes",
+    "  Notes: timestamp,note",
+    "  Weight: timestamp,weight_kg,notes",
     "Use get_entries(start_date, end_date, log_type) to read past data.",
     "Use grep_logs(pattern, log_type) to search across all data.",
+    "log_type options: food, sleep, notes, weight",
   );
 
   return parts.filter((l) => l !== undefined).join("\n");
@@ -929,47 +1038,43 @@ export async function processMessage(
 
       if (call.function.name === "get_entries") {
         const logType = (parsed.log_type as string) || "food";
-        const result =
-          logType === "sleep"
-            ? getSleepEntriesForDateRange(
-                context.userId,
-                parsed.start_date as string,
-                parsed.end_date as string,
-              )
-            : getEntriesForDateRange(
-                context.logsDir,
-                parsed.start_date as string,
-                parsed.end_date as string,
-              );
-        messages.push({
-          role: "assistant",
-          content: null,
-          tool_calls: [call],
-        });
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: result,
-        });
+        let result: string;
+        switch (logType) {
+          case "sleep":
+            result = getSleepEntriesForDateRange(context.userId, parsed.start_date as string, parsed.end_date as string);
+            break;
+          case "notes":
+            result = getNotesForDateRange(context.userId, parsed.start_date as string, parsed.end_date as string);
+            break;
+          case "weight":
+            result = getWeightsForDateRange(context.userId, parsed.start_date as string, parsed.end_date as string);
+            break;
+          default:
+            result = getEntriesForDateRange(context.logsDir, parsed.start_date as string, parsed.end_date as string);
+        }
+        messages.push({ role: "assistant", content: null, tool_calls: [call] });
+        messages.push({ role: "tool", tool_call_id: call.id, content: result });
         continue;
       }
 
       if (call.function.name === "grep_logs") {
         const logType = (parsed.log_type as string) || "food";
-        const result =
-          logType === "sleep"
-            ? grepSleepLogs(context.userId, parsed.pattern as string)
-            : grepLogs(context.logsDir, parsed.pattern as string);
-        messages.push({
-          role: "assistant",
-          content: null,
-          tool_calls: [call],
-        });
-        messages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: result,
-        });
+        let result: string;
+        switch (logType) {
+          case "sleep":
+            result = grepSleepLogs(context.userId, parsed.pattern as string);
+            break;
+          case "notes":
+            result = grepNotes(context.userId, parsed.pattern as string);
+            break;
+          case "weight":
+            result = grepWeights(context.userId, parsed.pattern as string);
+            break;
+          default:
+            result = grepLogs(context.logsDir, parsed.pattern as string);
+        }
+        messages.push({ role: "assistant", content: null, tool_calls: [call] });
+        messages.push({ role: "tool", tool_call_id: call.id, content: result });
         continue;
       }
 
@@ -1005,14 +1110,34 @@ export async function processMessage(
           };
         }
 
+        case "log_note":
+          return {
+            type: "log_note",
+            note: parsed.note as string,
+            message: (parsed.message as string) || "Note saved!",
+          };
+
+        case "log_weight":
+          return {
+            type: "log_weight",
+            weight_kg: parsed.weight_kg as number,
+            notes: (parsed.notes as string) || undefined,
+            message: (parsed.message as string) || "Weight recorded!",
+          };
+
         case "edit_entry": {
           const updates: Record<string, unknown> = {};
-          const logType = ((parsed.log_type as string) || "food") as "food" | "sleep";
+          const logType = ((parsed.log_type as string) || "food") as "food" | "sleep" | "notes" | "weight";
           if (logType === "sleep") {
             if (parsed.sleep_type !== undefined) updates.type = parsed.sleep_type;
             if (parsed.start_time !== undefined) updates.start_time = parsed.start_time;
             if (parsed.end_time !== undefined) updates.end_time = parsed.end_time;
             if (parsed.quality !== undefined) updates.quality = parsed.quality;
+            if (parsed.notes !== undefined) updates.notes = parsed.notes;
+          } else if (logType === "notes") {
+            if (parsed.notes !== undefined) updates.note = parsed.notes;
+          } else if (logType === "weight") {
+            if (parsed.quantity !== undefined) updates.weight_kg = parsed.quantity;
             if (parsed.notes !== undefined) updates.notes = parsed.notes;
           } else {
             if (parsed.food_item !== undefined) updates.food_item = parsed.food_item;
@@ -1035,7 +1160,7 @@ export async function processMessage(
         case "remove_entry":
           return {
             type: "remove_entry",
-            log_type: ((parsed.log_type as string) || "food") as "food" | "sleep",
+            log_type: ((parsed.log_type as string) || "food") as "food" | "sleep" | "notes" | "weight",
             date: (parsed.date as string) || undefined,
             entry_number: parsed.entry_number as number,
             message: (parsed.message as string) || "Removed!",

@@ -28,6 +28,17 @@ export interface SleepEntry {
   notes: string;
 }
 
+export interface NoteEntry {
+  timestamp: string;
+  note: string;
+}
+
+export interface WeightEntry {
+  timestamp: string;
+  weight_kg: number;
+  notes: string;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;

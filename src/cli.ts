@@ -38,6 +38,8 @@ import {
   updateSleepEntry,
   removeSleepEntry,
 } from "./sleep-log.js";
+import { appendNote, updateNote, removeNote } from "./notes-log.js";
+import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 
 // --- Helpers ---
@@ -196,31 +198,43 @@ async function processInput(
       break;
     }
 
+    case "log_note": {
+      appendNote(userId, { timestamp: nowHKT(), note: result.note });
+      print(result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "log_weight": {
+      appendWeight(userId, {
+        timestamp: nowHKT(),
+        weight_kg: result.weight_kg,
+        notes: result.notes || "",
+      });
+      print(result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
     case "edit_entry": {
       const editDate =
         result.date ||
         new Date().toLocaleDateString("en-CA", { timeZone: target.timezone });
 
       if (result.log_type === "sleep") {
-        const updates = result.updates as Partial<SleepEntry>;
-        const updated = updateSleepEntry(
-          userId,
-          editDate,
-          result.entry_number,
-          updates,
-        );
-        if (updated) {
-          print(result.message);
-        } else {
-          print(`Couldn't find sleep entry #${result.entry_number} on ${editDate}.`);
-        }
+        const updated = updateSleepEntry(userId, editDate, result.entry_number, result.updates as Partial<SleepEntry>);
+        print(updated ? result.message : `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`);
+      } else if (result.log_type === "notes") {
+        const updated = updateNote(userId, result.entry_number, result.updates as { note?: string });
+        print(updated ? result.message : `Couldn't find note #${result.entry_number}.`);
+      } else if (result.log_type === "weight") {
+        const updated = updateWeight(userId, result.entry_number, result.updates as { weight_kg?: number; notes?: string });
+        print(updated ? result.message : `Couldn't find weight entry #${result.entry_number}.`);
       } else {
         const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
-
         const updated = result.date
           ? updateEntryByDate(userId, editDate, result.entry_number, updates)
           : updateTodayEntry(userId, result.entry_number, updates, target.timezone);
-
         if (updated) {
           if (updated.quantity > 0) {
             addFood(updated.food_item, {
@@ -245,21 +259,18 @@ async function processInput(
 
       if (result.log_type === "sleep") {
         const removed = removeSleepEntry(userId, removeDate, result.entry_number);
-        if (removed) {
-          print(result.message);
-        } else {
-          print(`Couldn't find sleep entry #${result.entry_number} on ${removeDate}.`);
-        }
+        print(removed ? result.message : `Couldn't find sleep entry #${result.entry_number} on ${removeDate}.`);
+      } else if (result.log_type === "notes") {
+        const removed = removeNote(userId, result.entry_number);
+        print(removed ? result.message : `Couldn't find note #${result.entry_number}.`);
+      } else if (result.log_type === "weight") {
+        const removed = removeWeight(userId, result.entry_number);
+        print(removed ? result.message : `Couldn't find weight entry #${result.entry_number}.`);
       } else {
         const removed = result.date
           ? removeEntryByDate(userId, removeDate, result.entry_number)
           : removeTodayEntry(userId, result.entry_number, target.timezone);
-
-        if (removed) {
-          print(result.message);
-        } else {
-          print(`Couldn't find entry #${result.entry_number} on ${removeDate}.`);
-        }
+        print(removed ? result.message : `Couldn't find entry #${result.entry_number} on ${removeDate}.`);
       }
       addMessage(userId, "assistant", result.message);
       break;
