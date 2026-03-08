@@ -16,13 +16,11 @@ import {
   listSleepCsvFiles,
 } from "./sleep-log.js";
 import {
-  getRecentNotes,
   getNotesForDateRange,
   grepNotes,
 } from "./notes-log.js";
 import {
   getLatestWeight,
-  getAllWeights,
   getWeightsForDateRange,
   grepWeights,
 } from "./weight-log.js";
@@ -127,11 +125,15 @@ NOTES:
 - Notes are a general-purpose log. The user might say "note: doctor appointment next week" or "save a note about switching to brown rice"
 - Only use log_note when the user explicitly asks to save/record something — don't automatically create notes
 - Notes are stored in a single CSV file (notes.csv), not per date. Entry numbers are global.
+- Users can ask to delete notes — use remove_entry with log_type="notes" and the entry number
+- The context only shows the last 7 days of notes. Use get_entries or grep_logs with log_type="notes" for older notes.
 
 WEIGHT:
 - When the user reports their weight, use log_weight. Accept kg or lbs (convert lbs to kg).
-- The context shows the latest weight and recent trend if available
+- The context shows the last 7 days of weight entries and the latest reading
 - Weight is stored in a single CSV file (weight.csv). Entry numbers are global.
+- Users can edit old weight entries — use edit_entry with log_type="weight" and the entry number
+- Use get_entries or grep_logs with log_type="weight" for data older than 7 days.
 
 SLEEP TRACKING:
 - Users can log their sleep: when they went to bed, when they woke up, and how they'd rate it
@@ -802,34 +804,31 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     parts.push("", "Raw sleep CSV (today):", todaySleepCsv);
   }
 
-  // --- Latest weight ---
+  // --- Weight (last 7 days) ---
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000)
+    .toLocaleDateString("en-CA", { timeZone: ctx.timezone });
+  const recentWeightsCsv = getWeightsForDateRange(ctx.userId, sevenDaysAgo, todayDate);
   const latestWeight = getLatestWeight(ctx.userId);
   if (latestWeight) {
-    const weightDate = latestWeight.timestamp.slice(0, 10);
     parts.push(
       "",
-      `=== WEIGHT ===`,
-      `Latest: ${latestWeight.weight_kg} kg (${weightDate})${latestWeight.notes ? ` — ${latestWeight.notes}` : ""}`,
+      `=== WEIGHT (last 7 days) ===`,
+      `Latest: ${latestWeight.weight_kg} kg (${latestWeight.timestamp.slice(0, 10)})${latestWeight.notes ? ` — ${latestWeight.notes}` : ""}`,
     );
-    // Show recent trend (last 5)
-    const allWeights = getAllWeights(ctx.userId);
-    if (allWeights.length > 1) {
-      const recent = allWeights.slice(-5);
-      parts.push(
-        `Recent: ${recent.map((w) => `${w.weight_kg}kg (${w.timestamp.slice(5, 10)})`).join(", ")}`,
-      );
+    if (!recentWeightsCsv.startsWith("No ")) {
+      parts.push(recentWeightsCsv);
     }
+    parts.push("Use get_entries/grep_logs with log_type='weight' for older data.");
   }
 
-  // --- Recent notes ---
-  const recentNotes = getRecentNotes(ctx.userId, 5);
-  if (recentNotes.length > 0) {
+  // --- Notes (last 7 days) ---
+  const recentNotesCsv = getNotesForDateRange(ctx.userId, sevenDaysAgo, todayDate);
+  if (!recentNotesCsv.startsWith("No ")) {
     parts.push(
       "",
-      "=== RECENT NOTES ===",
-      ...recentNotes.map(
-        (n) => `  [${n.timestamp.slice(0, 10)}] ${n.note}`,
-      ),
+      "=== NOTES (last 7 days) ===",
+      recentNotesCsv,
+      "Use get_entries/grep_logs with log_type='notes' for older notes.",
     );
   }
 
