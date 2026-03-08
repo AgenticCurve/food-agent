@@ -12,7 +12,7 @@ Telegram bot for tracking food, sleep, weight, and notes via natural conversatio
 - Per-user git repos for data versioning
 
 ## Architecture
-- `src/telegram.ts` — Main bot: message handling, commands, check-ins (food + sleep)
+- `src/food-bot.ts` — Main bot: message handling, commands, check-ins (food + sleep)
 - `src/orchestrator.ts` — LLM orchestrator: 13 tools, multi-turn tool loop (max 10 rounds)
 - `src/claude.ts` — Claude CLI wrapper for deep analysis and web search
 - `src/food-log.ts` — CSV read/write for food entries (one file per day)
@@ -68,7 +68,7 @@ Always run `npm run build` after changes. If it passes with no output below the 
 ### Deploy to remote
 Remote server: `aiadmin@100.88.77.72`
 Bot runs at: `~/projects/food-agent`
-Autostart script: `~/.config/autostart-scripts/start-food-agent.sh`
+Managed by: systemd user service `food-agent.service`
 
 Full deploy cycle (do this every time after committing):
 ```bash
@@ -79,10 +79,10 @@ git push origin main
 ssh aiadmin@100.88.77.72 "cd ~/projects/food-agent && git pull && npm run build"
 
 # 3. Restart the bot
-ssh aiadmin@100.88.77.72 "bash ~/.config/autostart-scripts/start-food-agent.sh"
+ssh aiadmin@100.88.77.72 "systemctl --user restart food-agent"
 ```
 
-The autostart script handles: killing old process, sourcing env, starting with nohup, verifying PID.
+Managed by systemd with `Restart=always`. Logs: `.food-agent/bot.log`.
 
 ### GitHub
 Repo: `AgenticCurve/food-agent` (private)

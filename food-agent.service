@@ -1,0 +1,18 @@
+[Unit]
+Description=food-agent Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/aiadmin/projects/food-agent
+EnvironmentFile=/home/aiadmin/projects/food-agent/.env
+Environment=PATH=/home/aiadmin/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/local/bin/npx tsx src/food-bot.ts
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/aiadmin/projects/food-agent/.food-agent/bot.log
+StandardError=append:/home/aiadmin/projects/food-agent/.food-agent/bot.log
+
+[Install]
+WantedBy=default.target

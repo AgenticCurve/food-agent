@@ -4,10 +4,10 @@
   "type": "module",
   "description": "Telegram bot for tracking food and calories",
   "scripts": {
-    "dev": "tsx src/telegram.ts",
+    "dev": "tsx src/food-bot.ts",
     "build": "tsc",
-    "start": "node dist/telegram.js",
-    "telegram": "tsx src/telegram.ts",
+    "start": "node dist/food-bot.js",
+    "telegram": "tsx src/food-bot.ts",
     "cli": "tsx src/cli.ts",
     "pairing": "tsx src/pairing-cli.ts"
   },
