@@ -70,11 +70,17 @@ TIME HANDLING:
 - When referring to entry times in conversation (e.g. "I see you had eggs at 9:30 AM"), always show HKT times
 
 EDITING ENTRIES:
-Today's log shows entries numbered #1, #2, #3, etc. (resets daily). When the user wants to change a logged entry:
+Entries are numbered #1, #2, #3, etc. per day (resets daily). Both edit_entry and remove_entry work on ANY date — not just today.
+- For today's entries: use edit_entry/remove_entry without a date param
+- For past entries: set the date param (yyyy-mm-dd). Use get_entries first to see the entries for that date.
+- IMPORTANT: When editing or removing PAST entries (not today), you MUST ask the user for explicit confirmation before calling the tool. Example: "I see entry #2 on Mar 5 was '2 eggs (140 cal)'. Want me to change that to 3 eggs (210 cal)?" — only call the tool after they confirm.
+- For today's entries, no confirmation needed — just do it.
+
+When the user wants to change a logged entry:
 - Use edit_entry with the entry number and the updated fields
 - The user might say "change #2 to 3 eggs", "the toast was actually 120 cal", "that should be chicken not fish", etc.
 - They can also correct time: "I had #3 at 2pm not 1pm", "#1 was at 8:30 this morning"
-- Match the user's description to the correct entry number from today's log
+- Match the user's description to the correct entry number from the log
 - If changing quantity, ALWAYS recalculate and provide updated calories
 - If unsure which entry they mean, ask for clarification
 - Only include fields that are changing — omit unchanged fields
@@ -234,7 +240,7 @@ const TOOLS = [
     function: {
       name: "edit_entry",
       description:
-        "Edit an existing entry in today's log by its daily number (#1, #2, etc.). Works for both food and sleep logs — set log_type accordingly. For food: use food_item, quantity, unit, calories, timestamp. For sleep: use sleep_type, start_time, end_time, quality, notes.",
+        "Edit an existing entry by its number (#1, #2, etc.). Works for any date and both food and sleep logs. For past dates, use get_entries first to see the entries, then ALWAYS ask the user for explicit confirmation before editing. For food: use food_item, quantity, unit, calories, timestamp. For sleep: use sleep_type, start_time, end_time, quality, notes.",
       parameters: {
         type: "object",
         properties: {
@@ -243,9 +249,14 @@ const TOOLS = [
             enum: ["food", "sleep"],
             description: "Which log to edit (default: food)",
           },
+          date: {
+            type: "string",
+            description:
+              "Date of the entry in yyyy-mm-dd format. Omit for today.",
+          },
           entry_number: {
             type: "number",
-            description: "The entry number from today's log (1-based)",
+            description: "The entry number for that date's log (1-based)",
           },
           food_item: {
             type: "string",
@@ -304,7 +315,7 @@ const TOOLS = [
     function: {
       name: "remove_entry",
       description:
-        "Remove an entry from today's log by its daily number (#1, #2, etc.). Works for both food and sleep logs — set log_type accordingly.",
+        "Remove an entry by its number (#1, #2, etc.). Works for any date and both food and sleep logs. For past dates, use get_entries first to see the entries, then ALWAYS ask the user for explicit confirmation before removing.",
       parameters: {
         type: "object",
         properties: {
@@ -312,6 +323,11 @@ const TOOLS = [
             type: "string",
             enum: ["food", "sleep"],
             description: "Which log to remove from (default: food)",
+          },
+          date: {
+            type: "string",
+            description:
+              "Date of the entry in yyyy-mm-dd format. Omit for today.",
           },
           entry_number: {
             type: "number",
@@ -506,6 +522,7 @@ export type OrchestratorResult =
   | {
       type: "edit_entry";
       log_type: "food" | "sleep";
+      date?: string;
       entry_number: number;
       updates: Record<string, unknown>;
       message: string;
@@ -513,6 +530,7 @@ export type OrchestratorResult =
   | {
       type: "remove_entry";
       log_type: "food" | "sleep";
+      date?: string;
       entry_number: number;
       message: string;
     }
@@ -943,6 +961,7 @@ export async function processMessage(
           return {
             type: "edit_entry",
             log_type: logType,
+            date: (parsed.date as string) || undefined,
             entry_number: parsed.entry_number as number,
             updates,
             message: (parsed.message as string) || "Updated!",
@@ -953,6 +972,7 @@ export async function processMessage(
           return {
             type: "remove_entry",
             log_type: ((parsed.log_type as string) || "food") as "food" | "sleep",
+            date: (parsed.date as string) || undefined,
             entry_number: parsed.entry_number as number,
             message: (parsed.message as string) || "Removed!",
           };

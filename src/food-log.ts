@@ -191,6 +191,33 @@ export function removeTodayEntry(
   return removed;
 }
 
+export function updateEntryByDate(
+  userId: string,
+  date: string,
+  entryNumber: number,
+  updates: Partial<FoodEntry>,
+): FoodEntry | null {
+  const filePath = getDateFilePath(userId, date);
+  const entries = readDateFile(filePath);
+  if (entryNumber < 1 || entryNumber > entries.length) return null;
+  entries[entryNumber - 1] = { ...entries[entryNumber - 1], ...updates };
+  writeDateFile(filePath, entries);
+  return entries[entryNumber - 1];
+}
+
+export function removeEntryByDate(
+  userId: string,
+  date: string,
+  entryNumber: number,
+): FoodEntry | null {
+  const filePath = getDateFilePath(userId, date);
+  const entries = readDateFile(filePath);
+  if (entryNumber < 1 || entryNumber > entries.length) return null;
+  const removed = entries.splice(entryNumber - 1, 1)[0];
+  writeDateFile(filePath, entries);
+  return removed;
+}
+
 /** Returns the user's log directory (contains yyyy/mm/ subdirectories with CSV files). */
 export function getLogDirPath(userId: string): string {
   return getUserDir(userId);

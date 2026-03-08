@@ -27,6 +27,8 @@ import {
   removeLastEntry,
   updateTodayEntry,
   removeTodayEntry,
+  updateEntryByDate,
+  removeEntryByDate,
   getTodayEntries,
   getEntriesForDays,
   getLogDirPath,
@@ -280,59 +282,34 @@ async function handleMessages(
     }
 
     case "edit_entry": {
+      const editDate =
+        result.date ||
+        new Date().toLocaleDateString("en-CA", { timeZone: target.timezone });
+
       if (result.log_type === "sleep") {
-        const today = new Date()
-          .toLocaleDateString("en-CA", { timeZone: target.timezone });
         const updates = result.updates as Partial<SleepEntry>;
-        // Recalculate duration if times changed
-        if (updates.start_time || updates.end_time) {
-          const todaySleepEntries = getTodaySleep(userId, target.timezone);
-          const existing = todaySleepEntries[result.entry_number - 1];
-          if (existing) {
-            const st = updates.start_time || existing.start_time;
-            const et = updates.end_time || existing.end_time;
-            updates.duration_hours =
-              Math.round(
-                ((new Date(et).getTime() - new Date(st).getTime()) / 3600000) *
-                  10,
-              ) / 10;
-          }
-        }
         const updated = updateSleepEntry(
           userId,
-          today,
+          editDate,
           result.entry_number,
           updates,
         );
         if (updated) {
-          log("INFO", `Edited sleep #${result.entry_number} for ${userId}`);
+          log("INFO", `Edited sleep #${result.entry_number} (${editDate}) for ${userId}`);
           await sendText(bot, chatId, result.message);
         } else {
           await sendText(
             bot,
             chatId,
-            `Couldn't find sleep entry #${result.entry_number} in today's log.`,
+            `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`,
           );
         }
       } else {
         const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
 
-        // If quantity changed but no calories provided, recalculate
-        if (updates.quantity !== undefined && updates.calories === undefined) {
-          const entry = todayEntries[result.entry_number - 1];
-          if (entry && entry.quantity > 0) {
-            updates.calories = Math.round(
-              (entry.calories / entry.quantity) * updates.quantity,
-            );
-          }
-        }
-
-        const updated = updateTodayEntry(
-          userId,
-          result.entry_number,
-          updates,
-          target.timezone,
-        );
+        const updated = result.date
+          ? updateEntryByDate(userId, editDate, result.entry_number, updates)
+          : updateTodayEntry(userId, result.entry_number, updates, target.timezone);
 
         if (updated) {
           if (updated.quantity > 0) {
@@ -342,13 +319,13 @@ async function handleMessages(
               quantity: 1,
             });
           }
-          log("INFO", `Edited #${result.entry_number} for ${userId}: ${updated.food_item} (${updated.calories} cal)`);
+          log("INFO", `Edited #${result.entry_number} (${editDate}) for ${userId}: ${updated.food_item} (${updated.calories} cal)`);
           await sendText(bot, chatId, result.message);
         } else {
           await sendText(
             bot,
             chatId,
-            `Couldn't find entry #${result.entry_number} in today's log.`,
+            `Couldn't find entry #${result.entry_number} on ${editDate}.`,
           );
         }
       }
@@ -357,34 +334,35 @@ async function handleMessages(
     }
 
     case "remove_entry": {
+      const removeDate =
+        result.date ||
+        new Date().toLocaleDateString("en-CA", { timeZone: target.timezone });
+
       if (result.log_type === "sleep") {
-        const today = new Date()
-          .toLocaleDateString("en-CA", { timeZone: target.timezone });
-        const removed = removeSleepEntry(userId, today, result.entry_number);
+        const removed = removeSleepEntry(userId, removeDate, result.entry_number);
         if (removed) {
-          log("INFO", `Removed sleep #${result.entry_number} for ${userId}`);
+          log("INFO", `Removed sleep #${result.entry_number} (${removeDate}) for ${userId}`);
           await sendText(bot, chatId, result.message);
         } else {
           await sendText(
             bot,
             chatId,
-            `Couldn't find sleep entry #${result.entry_number} in today's log.`,
+            `Couldn't find sleep entry #${result.entry_number} on ${removeDate}.`,
           );
         }
       } else {
-        const removed = removeTodayEntry(
-          userId,
-          result.entry_number,
-          target.timezone,
-        );
+        const removed = result.date
+          ? removeEntryByDate(userId, removeDate, result.entry_number)
+          : removeTodayEntry(userId, result.entry_number, target.timezone);
+
         if (removed) {
-          log("INFO", `Removed #${result.entry_number} for ${userId}: ${removed.food_item}`);
+          log("INFO", `Removed #${result.entry_number} (${removeDate}) for ${userId}: ${removed.food_item}`);
           await sendText(bot, chatId, result.message);
         } else {
           await sendText(
             bot,
             chatId,
-            `Couldn't find entry #${result.entry_number} in today's log.`,
+            `Couldn't find entry #${result.entry_number} on ${removeDate}.`,
           );
         }
       }
