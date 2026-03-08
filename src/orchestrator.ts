@@ -89,30 +89,26 @@ When the user wants to remove an entry:
 - Use remove_entry with the entry number
 - The user might say "remove #3", "delete the toast", "I didn't actually have the biryani"
 
-RESEARCH & TOOLS:
-- search: When you need current/factual information (nutrition facts, calorie counts, health info, food research), use the search tool. Results come back to you so you can synthesize a helpful response. Always search when unsure about calorie counts for unfamiliar foods.
-- get_entries: Retrieve food log entries for a date range. Use for questions about past days ("what did I eat last Tuesday?", "show me this week's log").
-- grep_logs: Search all food logs for a text pattern. Use for questions like "when did I last have pizza?", "how often do I eat eggs?", "find all entries with chicken".
-- ask_claude: For complex analysis of the user's food data (trends, patterns, weekly summaries, comparisons). Claude has access to all their CSV log files and chat history.
-- tell_claude: For tasks requiring file access, computation, or actions. Claude has full bash access, can read/write files, run scripts, and search the web. Use for generating reports, analyzing data across multiple days, or any task you can't do yourself.
-- Simple questions about today's data: answer directly from the context provided — no need for tools.
-- The "Available dates" list in the context shows which date files exist — use get_entries or grep_logs to read them.
+TOOLS — WHEN AND HOW TO USE:
 
-WHEN TO USE CLAUDE:
-Claude is your powerful fallback. If you're unsure how to answer something, if a question is too complex, if you need to compute or analyze data across many days, or if you simply don't know — delegate to Claude via ask_claude or tell_claude. Don't struggle or give a weak answer when Claude can help. Claude has full file access, bash, web search, and can handle anything you can't. When in doubt, ask Claude.
+1. log_food — Log food/medicine/supplement entries. Only call when you have complete info (item, quantity, calories).
+2. log_sleep — Log a sleep entry. Needs: type (night/nap), start_time, end_time, quality (1-10). Optional: notes.
+3. edit_entry — Edit any entry by number. Set log_type="food" or "sleep". Set date (yyyy-mm-dd) for past entries, omit for today.
+4. remove_entry — Remove any entry by number. Same log_type and date params as edit_entry.
+5. search — Web search via Perplexity. Use for nutrition facts, calorie counts, health info, current prices, or anything you're unsure about. Results come back to you — synthesize them into a helpful response.
+6. get_entries — Retrieve CSV entries for a date range. Set log_type="food" or "sleep". Results come back to you.
+7. grep_logs — Search all logs for a text pattern (case-insensitive). Set log_type="food" or "sleep". Use for "when did I last eat X?" or "how often do I nap?" etc.
+8. ask_claude — Ask Claude for analysis or information. Use for complex questions about trends, patterns, comparisons, or anything requiring deep data analysis.
+9. tell_claude — Instruct Claude to perform an action. Claude has full bash access, file read/write, web search. Use for reports, multi-day analysis, computation, or anything you can't do yourself.
+10. set_target — Change the user's daily calorie target.
+11. set_timezone — Change the user's timezone.
 
-TARGETS:
-- When user wants to change their daily calorie target, use set_target
-- When user wants to change timezone, use set_timezone
-
-DATA STRUCTURE:
-The user's food logs are stored as CSV files organized by date:
-  logs/{userId}/{yyyy}/{mm}/{yyyy-mm-dd}.csv
-  Schema: timestamp,food_item,quantity,unit,calories,notes
-Sleep logs are stored monthly:
-  logs/{userId}/sleep/{yyyy}-{mm}.csv
-  Schema: date,type,start_time,end_time,duration_hours,quality,notes
-  chat-history.json contains the recent conversation history.
+CHOOSING THE RIGHT TOOL:
+- Today's data is shown in context — answer simple questions directly, no tool needed.
+- Past data → use get_entries or grep_logs. The "Directory tree" in context shows which dates have data.
+- Unsure about calorie counts → search
+- Complex multi-day analysis → ask_claude or tell_claude
+- Claude is your powerful fallback. If stuck, unsure, or the question is too complex — delegate to Claude. Don't struggle or give a weak answer when Claude can help. Claude has full file access, bash, web search, and can handle anything you can't. When in doubt, ask Claude.
 
 SLEEP TRACKING:
 - Users can log their sleep: when they went to bed, when they woke up, and how they'd rate it
@@ -575,6 +571,31 @@ export interface OrchestratorContext {
   todaySleep: SleepEntry[];
 }
 
+/** Build a tree-like listing of the user's log directory. */
+function buildDirTree(dir: string): string {
+  if (!fs.existsSync(dir)) return "  (no data yet)";
+  const lines: string[] = [];
+
+  function walk(d: string, prefix: string, indent: string): void {
+    const entries = fs.readdirSync(d, { withFileTypes: true }).sort((a, b) =>
+      a.name.localeCompare(b.name),
+    );
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      const isLast = i === entries.length - 1;
+      const connector = isLast ? "└── " : "├── ";
+      const childIndent = isLast ? "    " : "│   ";
+      lines.push(`${indent}${connector}${entry.name}`);
+      if (entry.isDirectory()) {
+        walk(path.join(d, entry.name), entry.name, indent + childIndent);
+      }
+    }
+  }
+
+  walk(dir, "", "  ");
+  return lines.length > 0 ? lines.join("\n") : "  (no data yet)";
+}
+
 function buildContextBlock(ctx: OrchestratorContext): string {
   const now = new Date();
   const timeStr = now.toLocaleString("en-US", {
@@ -582,9 +603,13 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     dateStyle: "medium",
     timeStyle: "short",
   });
+  const todayDate = now.toLocaleDateString("en-CA", {
+    timeZone: ctx.timezone,
+  });
 
   const pct = Math.round((ctx.todayCalories / ctx.dailyTarget) * 100);
 
+  // --- Today's food log (formatted) ---
   const todayLogStr =
     ctx.todayLog.length > 0
       ? ctx.todayLog
@@ -599,38 +624,19 @@ function buildContextBlock(ctx: OrchestratorContext): string {
           .join("\n")
       : "  (nothing logged yet)";
 
-  const knownFoodsEntries = Object.entries(ctx.knownFoods);
-  const knownFoodsStr =
-    knownFoodsEntries.length > 0
-      ? knownFoodsEntries
-          .slice(0, 50)
+  // --- Today's food log (raw CSV for precision) ---
+  const todayFoodCsv =
+    ctx.todayLog.length > 0
+      ? `  timestamp,food_item,quantity,unit,calories,notes\n` +
+        ctx.todayLog
           .map(
-            ([name, info]) =>
-              `  ${name}: ${info.calories} cal per ${info.quantity} ${info.unit}`,
+            (e) =>
+              `  ${e.timestamp},${e.food_item},${e.quantity},${e.unit},${e.calories},${e.notes || ""}`,
           )
           .join("\n")
       : "";
 
-  const historyStr =
-    ctx.chatHistory.length > 0
-      ? ctx.chatHistory
-          .slice(-10)
-          .map((m) => `[${m.role}] ${m.text}`)
-          .join("\n")
-      : "";
-
-  const lastEntry = ctx.todayLog[ctx.todayLog.length - 1];
-  let lastFoodAgo = "";
-  if (lastEntry) {
-    const mins = Math.round(
-      (Date.now() - new Date(lastEntry.timestamp).getTime()) / 60000,
-    );
-    if (mins < 60) lastFoodAgo = `Last food logged: ${mins} minutes ago`;
-    else
-      lastFoodAgo = `Last food logged: ${Math.round(mins / 60)} hours ago`;
-  }
-
-  // Build sleep summary
+  // --- Today's sleep log (formatted) ---
   const todaySleepStr =
     ctx.todaySleep.length > 0
       ? ctx.todaySleep
@@ -650,39 +656,97 @@ function buildContextBlock(ctx: OrchestratorContext): string {
           .join("\n")
       : "  (no sleep logged today)";
 
+  // --- Today's sleep log (raw CSV) ---
+  const todaySleepCsv =
+    ctx.todaySleep.length > 0
+      ? `  date,type,start_time,end_time,duration_hours,quality,notes\n` +
+        ctx.todaySleep
+          .map(
+            (s) =>
+              `  ${s.date},${s.type},${s.start_time},${s.end_time},${s.duration_hours},${s.quality},${s.notes || ""}`,
+          )
+          .join("\n")
+      : "";
+
+  // --- Known foods ---
+  const knownFoodsEntries = Object.entries(ctx.knownFoods);
+  const knownFoodsStr =
+    knownFoodsEntries.length > 0
+      ? knownFoodsEntries
+          .slice(0, 50)
+          .map(
+            ([name, info]) =>
+              `  ${name}: ${info.calories} cal per ${info.quantity} ${info.unit}`,
+          )
+          .join("\n")
+      : "";
+
+  // --- Chat history ---
+  const historyStr =
+    ctx.chatHistory.length > 0
+      ? ctx.chatHistory
+          .slice(-10)
+          .map((m) => `[${m.role}] ${m.text}`)
+          .join("\n")
+      : "";
+
+  // --- Last food timing ---
+  const lastEntry = ctx.todayLog[ctx.todayLog.length - 1];
+  let lastFoodAgo = "";
+  if (lastEntry) {
+    const mins = Math.round(
+      (Date.now() - new Date(lastEntry.timestamp).getTime()) / 60000,
+    );
+    if (mins < 60) lastFoodAgo = `Last food logged: ${mins} minutes ago`;
+    else
+      lastFoodAgo = `Last food logged: ${Math.round(mins / 60)} hours ago`;
+  }
+
+  // --- Directory tree ---
+  const dirTree = buildDirTree(ctx.logsDir);
+
+  // --- Assemble ---
   const parts = [
+    `Today's date: ${todayDate}`,
     `Current time (HKT): ${timeStr}`,
     `Daily target: ${ctx.dailyTarget} cal`,
     `Today's intake: ${ctx.todayCalories} cal (${pct}%)`,
     lastFoodAgo,
     "",
-    "Today's food log:",
+    "=== TODAY'S FOOD LOG ===",
     todayLogStr,
     "",
-    "Today's sleep log:",
+    "=== TODAY'S SLEEP LOG ===",
     todaySleepStr,
   ];
+
+  // Raw CSV data for precise reference
+  if (todayFoodCsv) {
+    parts.push("", "Raw food CSV (today):", todayFoodCsv);
+  }
+  if (todaySleepCsv) {
+    parts.push("", "Raw sleep CSV (today):", todaySleepCsv);
+  }
 
   if (knownFoodsStr) {
     parts.push("", "Known foods (use these calorie values):", knownFoodsStr);
   }
 
   if (historyStr) {
-    parts.push("", "Recent conversation:", historyStr);
+    parts.push("", "=== RECENT CONVERSATION ===", historyStr);
   }
 
-  // Show available date files so the LLM knows what data exists
-  if (ctx.logsDir) {
-    const dateFiles = listCsvFiles(ctx.logsDir);
-    if (dateFiles.length > 0) {
-      const dates = dateFiles.map((f) => path.basename(f, ".csv"));
-      parts.push("", `Available food dates (${dates.length} files): ${dates.join(", ")}`);
-    }
-    const sleepFiles = listSleepCsvFiles(ctx.userId);
-    if (sleepFiles.length > 0) {
-      parts.push(`Available sleep files: ${sleepFiles.join(", ")}`);
-    }
-  }
+  parts.push(
+    "",
+    "=== DIRECTORY TREE ===",
+    `User log directory: logs/${ctx.userId}/`,
+    dirTree,
+    "",
+    "Food CSV schema: timestamp,food_item,quantity,unit,calories,notes",
+    "Sleep CSV schema: date,type,start_time,end_time,duration_hours,quality,notes",
+    "Use get_entries(start_date, end_date, log_type) to read past data.",
+    "Use grep_logs(pattern, log_type) to search across all data.",
+  );
 
   return parts.filter((l) => l !== undefined).join("\n");
 }
