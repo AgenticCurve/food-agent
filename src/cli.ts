@@ -27,7 +27,7 @@ import {
   getTodayEntries,
   getEntriesForDays,
   getLogDirPath,
-  nowHKT,
+  nowTZ,
 } from "./food-log.js";
 import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
@@ -132,7 +132,7 @@ async function processInput(
 
   switch (result.type) {
     case "log_food": {
-      const now = result.timestamp || nowHKT();
+      const now = result.timestamp || nowTZ(target.timezone);
       const entries: FoodEntry[] = result.entries.map((e) => ({
         timestamp: now,
         food_item: e.food_item,
@@ -199,7 +199,7 @@ async function processInput(
     }
 
     case "log_note": {
-      appendNote(userId, { timestamp: nowHKT(), note: result.note });
+      appendNote(userId, { timestamp: nowTZ(target.timezone), note: result.note });
       print(result.message);
       addMessage(userId, "assistant", result.message);
       break;
@@ -207,7 +207,7 @@ async function processInput(
 
     case "log_weight": {
       appendWeight(userId, {
-        timestamp: nowHKT(),
+        timestamp: nowTZ(target.timezone),
         weight_kg: result.weight_kg,
         notes: result.notes || "",
       });
@@ -282,7 +282,7 @@ async function processInput(
       printDim("Thinking...");
       try {
         const logsDir = getLogDirPath(userId);
-        const answer = await askAboutFoodData(userId, logsDir, prompt);
+        const answer = await askAboutFoodData(userId, logsDir, prompt, target.timezone);
         print(answer);
         addMessage(userId, "assistant", `[claude]\n${answer}`);
       } catch (err) {
@@ -556,7 +556,7 @@ async function startRepl(
       printDim("Asking Claude...");
       try {
         const logsDir = getLogDirPath(userId);
-        const answer = await askAboutFoodData(userId, logsDir, claudeMatch[1].trim());
+        const answer = await askAboutFoodData(userId, logsDir, claudeMatch[1].trim(), target.timezone);
         print(answer);
         addMessage(userId, "assistant", answer);
       } catch (err) {
@@ -697,7 +697,7 @@ async function main(): Promise<void> {
       }
       printDim("Asking Claude...");
       const logsDir = getLogDirPath(userId);
-      const answer = await askAboutFoodData(userId, logsDir, q);
+      const answer = await askAboutFoodData(userId, logsDir, q, getTarget(userId).timezone);
       print(answer);
       return;
     }

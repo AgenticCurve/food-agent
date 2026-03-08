@@ -5,16 +5,31 @@ import type { FoodEntry } from "./types.js";
 
 const LOGS_DIR = dataPath("logs");
 const CSV_HEADER = "timestamp,food_item,quantity,unit,calories,notes";
-const HKT_TZ = "Asia/Hong_Kong";
+const DEFAULT_TZ = "Asia/Hong_Kong";
 
 /**
- * Current timestamp in HKT as ISO 8601 with +08:00 offset.
- * All timestamps in the DB are stored in HKT.
+ * Compute the UTC offset string (e.g. "+08:00", "+05:30", "-05:00") for a timezone.
  */
-export function nowHKT(): string {
+function getUtcOffset(timezone: string, date?: Date): string {
+  const d = date ?? new Date();
+  const utc = d.getTime();
+  const local = new Date(d.toLocaleString("en-US", { timeZone: timezone })).getTime();
+  const diffMin = Math.round((local - utc) / 60000);
+  const sign = diffMin >= 0 ? "+" : "-";
+  const abs = Math.abs(diffMin);
+  const hours = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mins = String(abs % 60).padStart(2, "0");
+  return `${sign}${hours}:${mins}`;
+}
+
+/**
+ * Current timestamp as ISO 8601 with the user's timezone offset.
+ */
+export function nowTZ(timezone?: string): string {
+  const tz = timezone || DEFAULT_TZ;
   const d = new Date();
   const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: HKT_TZ,
+    timeZone: tz,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -25,15 +40,21 @@ export function nowHKT(): string {
   });
   const parts = fmt.formatToParts(d);
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
-  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}+08:00`;
+  const offset = getUtcOffset(tz, d);
+  return `${get("year")}-${get("month")}-${get("day")}T${get("hour")}:${get("minute")}:${get("second")}${offset}`;
 }
 
-function todayHKT(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: HKT_TZ });
+/** @deprecated Use nowTZ(timezone) instead */
+export function nowHKT(): string {
+  return nowTZ(DEFAULT_TZ);
 }
 
-function hktDateStr(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: HKT_TZ });
+function todayTZ(timezone?: string): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: timezone || DEFAULT_TZ });
+}
+
+function dateStrTZ(d: Date, timezone?: string): string {
+  return d.toLocaleDateString("en-CA", { timeZone: timezone || DEFAULT_TZ });
 }
 
 function getUserDir(userId: string): string {
@@ -125,19 +146,19 @@ function writeDateFile(filePath: string, entries: FoodEntry[]): void {
   fs.writeFileSync(filePath, lines.join("\n") + "\n", "utf8");
 }
 
-export function appendEntries(userId: string, entries: FoodEntry[]): void {
-  const date = todayHKT();
+export function appendEntries(userId: string, entries: FoodEntry[], timezone?: string): void {
+  const date = todayTZ(timezone);
   const filePath = getDateFilePath(userId, date);
   const existing = readDateFile(filePath);
   existing.push(...entries);
   writeDateFile(filePath, existing);
 }
 
-export function removeLastEntry(userId: string): FoodEntry | null {
+export function removeLastEntry(userId: string, timezone?: string): FoodEntry | null {
   for (let i = 0; i < 365; i++) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const date = hktDateStr(d);
+    const date = dateStrTZ(d, timezone);
     const filePath = getDateFilePath(userId, date);
     const entries = readDateFile(filePath);
     if (entries.length > 0) {
@@ -149,16 +170,16 @@ export function removeLastEntry(userId: string): FoodEntry | null {
   return null;
 }
 
-export function getTodayEntries(userId: string, _timezone?: string): FoodEntry[] {
-  return readDateFile(getDateFilePath(userId, todayHKT()));
+export function getTodayEntries(userId: string, timezone?: string): FoodEntry[] {
+  return readDateFile(getDateFilePath(userId, todayTZ(timezone)));
 }
 
-export function getEntriesForDays(userId: string, days: number): FoodEntry[] {
+export function getEntriesForDays(userId: string, days: number, timezone?: string): FoodEntry[] {
   const entries: FoodEntry[] = [];
   for (let i = 0; i < days; i++) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const date = hktDateStr(d);
+    const date = dateStrTZ(d, timezone);
     entries.push(...readDateFile(getDateFilePath(userId, date)));
   }
   return entries;
@@ -168,9 +189,9 @@ export function updateTodayEntry(
   userId: string,
   entryNumber: number,
   updates: Partial<FoodEntry>,
-  _timezone?: string,
+  timezone?: string,
 ): FoodEntry | null {
-  const filePath = getDateFilePath(userId, todayHKT());
+  const filePath = getDateFilePath(userId, todayTZ(timezone));
   const entries = readDateFile(filePath);
   if (entryNumber < 1 || entryNumber > entries.length) return null;
   entries[entryNumber - 1] = { ...entries[entryNumber - 1], ...updates };
@@ -181,9 +202,9 @@ export function updateTodayEntry(
 export function removeTodayEntry(
   userId: string,
   entryNumber: number,
-  _timezone?: string,
+  timezone?: string,
 ): FoodEntry | null {
-  const filePath = getDateFilePath(userId, todayHKT());
+  const filePath = getDateFilePath(userId, todayTZ(timezone));
   const entries = readDateFile(filePath);
   if (entryNumber < 1 || entryNumber > entries.length) return null;
   const removed = entries.splice(entryNumber - 1, 1)[0];

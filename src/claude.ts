@@ -4,7 +4,7 @@ import fs from "fs";
 import path from "path";
 import { dataPath } from "./paths.js";
 import { PROJECT_ROOT } from "./paths.js";
-import { nowHKT } from "./food-log.js";
+import { nowTZ } from "./food-log.js";
 
 const SESSIONS_DIR = dataPath("sessions");
 
@@ -128,10 +128,10 @@ function listCsvFilesRecursive(dir: string): string[] {
   return results.sort();
 }
 
-function buildSystemPrompt(logsDir: string): string {
+function buildSystemPrompt(logsDir: string, timezone: string): string {
   const files = listCsvFilesRecursive(logsDir);
-  const hktNow = nowHKT();
-  const todayDate = hktNow.split("T")[0];
+  const localNow = nowTZ(timezone);
+  const todayDate = localNow.split("T")[0];
 
   const filesInfo =
     files.length > 0
@@ -146,7 +146,7 @@ function buildSystemPrompt(logsDir: string): string {
     "You are called when they need deeper analysis, research, or questions that require looking at their data or the web.",
     "",
     "DATA:",
-    `Current date/time (HKT): ${hktNow}`,
+    `Current date/time: ${localNow} (${timezone})`,
     `Today's date: ${todayDate}`,
     "",
     "Directory structure (current working directory is the user's log folder):",
@@ -159,7 +159,7 @@ function buildSystemPrompt(logsDir: string): string {
     filesInfo,
     "",
     "Food CSV schema: timestamp,food_item,quantity,unit,calories,notes",
-    "- All timestamps are in HKT (Hong Kong Time, UTC+8)",
+    `- All timestamps are in the user's timezone (${timezone})`,
     "- Calories can be 0 for non-food items (medicine, supplements, water)",
     "- Units vary: piece, slice, cup, bowl, plate, gram, ml, serving, tbsp, tsp, pill, tablet, capsule, glass, dose",
     "",
@@ -188,7 +188,7 @@ function buildSystemPrompt(logsDir: string): string {
     "- Read CSV files as needed using your file tools",
     "- For ANY web lookup, use the bash search command above — never try built-in web tools",
     "- Be concise and helpful",
-    "- All times should be in HKT — never mention UTC to the user",
+    `- All times should be in the user's timezone (${timezone}) — never mention UTC to the user`,
   ].join("\n");
 }
 
@@ -200,12 +200,13 @@ export async function askAboutFoodData(
   userId: string,
   logsDir: string,
   question: string,
+  timezone?: string,
 ): Promise<string> {
   const sessionId = userIdToUuid(userId);
 
   log("DEBUG", `askAboutFoodData: userId=${userId}, session=${sessionId}`);
 
-  const systemPrompt = buildSystemPrompt(logsDir);
+  const systemPrompt = buildSystemPrompt(logsDir, timezone || "Asia/Hong_Kong");
   const fullPrompt = `${systemPrompt}\n\n---\n\n${question}`;
 
   if (isSessionInitialized(userId)) {

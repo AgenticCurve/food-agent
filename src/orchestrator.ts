@@ -70,13 +70,12 @@ NON-FOOD ITEMS:
 - Treat them like any other entry — they get a daily number and can be edited/removed
 
 TIME HANDLING:
-- Everything is in HKT (Hong Kong Time, UTC+8). All times the user mentions are in HKT. All times you mention must be in HKT.
-- Never mention UTC or timezone offsets to the user — just use HKT times naturally.
-- When no time is specified, omit the timestamp parameter — the system uses current HKT time automatically
-- When the user specifies a time ("at 1pm", "around noon", "had breakfast at 8:30"), output an ISO 8601 timestamp with +08:00 offset
-- Example: user says "1pm" on Mar 7 → "2026-03-07T13:00:00+08:00"
+- The user's timezone is shown in the context below. All times the user mentions are in their timezone. All times you display must be in their timezone.
+- Never mention UTC or timezone offsets to the user — just use local times naturally.
+- When no time is specified, omit the timestamp parameter — the system uses the user's current local time automatically
+- When the user specifies a time ("at 1pm", "around noon", "had breakfast at 8:30"), output an ISO 8601 timestamp with the correct UTC offset for their timezone
 - This applies to both log_food (new entries) and edit_entry (correcting time)
-- When referring to entry times in conversation (e.g. "I see you had eggs at 9:30 AM"), always show HKT times
+- When referring to entry times in conversation (e.g. "I see you had eggs at 9:30 AM"), always show times in the user's timezone
 
 EDITING ENTRIES:
 Entries are numbered #1, #2, #3, etc. per day (resets daily). Both edit_entry and remove_entry work on ANY date — not just today.
@@ -784,7 +783,7 @@ function buildContextBlock(ctx: OrchestratorContext): string {
   // --- Assemble ---
   const parts = [
     `Today's date: ${todayDate}`,
-    `Current time (HKT): ${timeStr}`,
+    `Current time: ${timeStr} (${ctx.timezone})`,
     `Daily target: ${ctx.dailyTarget} cal`,
     `Today's intake: ${ctx.todayCalories} cal (${pct}%)`,
     lastFoodAgo,

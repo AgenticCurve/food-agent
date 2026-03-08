@@ -6,14 +6,14 @@ import type { SleepEntry } from "./types.js";
 const LOGS_DIR = dataPath("logs");
 const CSV_HEADER =
   "date,type,start_time,end_time,duration_hours,quality,notes";
-const HKT_TZ = "Asia/Hong_Kong";
+const DEFAULT_TZ = "Asia/Hong_Kong";
 
-function todayHKT(): string {
-  return new Date().toLocaleDateString("en-CA", { timeZone: HKT_TZ });
+function todayTZ(timezone?: string): string {
+  return new Date().toLocaleDateString("en-CA", { timeZone: timezone || DEFAULT_TZ });
 }
 
-function hktDateStr(d: Date): string {
-  return d.toLocaleDateString("en-CA", { timeZone: HKT_TZ });
+function dateStrTZ(d: Date, timezone?: string): string {
+  return d.toLocaleDateString("en-CA", { timeZone: timezone || DEFAULT_TZ });
 }
 
 /** logs/{userId}/sleep/{yyyy}-{mm}.csv */
@@ -106,8 +106,8 @@ export function appendSleepEntry(userId: string, entry: SleepEntry): void {
   writeSleepFile(filePath, existing);
 }
 
-export function getTodaySleep(userId: string, _timezone?: string): SleepEntry[] {
-  const today = todayHKT();
+export function getTodaySleep(userId: string, timezone?: string): SleepEntry[] {
+  const today = todayTZ(timezone);
   const filePath = getSleepFilePath(userId, today);
   return readSleepFile(filePath).filter((e) => e.date === today);
 }
@@ -115,13 +115,14 @@ export function getTodaySleep(userId: string, _timezone?: string): SleepEntry[] 
 export function getSleepForDays(
   userId: string,
   days: number,
+  timezone?: string,
 ): SleepEntry[] {
   const entries: SleepEntry[] = [];
   const seen = new Set<string>();
   for (let i = 0; i < days; i++) {
     const d = new Date();
     d.setDate(d.getDate() - i);
-    const date = hktDateStr(d);
+    const date = dateStrTZ(d, timezone);
     const fileKey = date.slice(0, 7); // yyyy-mm
     if (!seen.has(fileKey)) {
       seen.add(fileKey);
@@ -132,7 +133,7 @@ export function getSleepForDays(
   // Filter to only the requested date range
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - days);
-  const cutoffStr = hktDateStr(cutoff);
+  const cutoffStr = dateStrTZ(cutoff, timezone);
   return entries.filter((e) => e.date >= cutoffStr).sort((a, b) => a.date.localeCompare(b.date));
 }
 

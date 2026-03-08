@@ -32,7 +32,7 @@ import {
   getTodayEntries,
   getEntriesForDays,
   getLogDirPath,
-  nowHKT,
+  nowTZ,
 } from "./food-log.js";
 import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
@@ -228,7 +228,7 @@ async function handleMessages(
 
   switch (result.type) {
     case "log_food": {
-      const now = result.timestamp || nowHKT();
+      const now = result.timestamp || nowTZ(target.timezone);
       const entries: FoodEntry[] = result.entries.map((e) => ({
         timestamp: now,
         food_item: e.food_item,
@@ -296,7 +296,7 @@ async function handleMessages(
     }
 
     case "log_note": {
-      appendNote(userId, { timestamp: nowHKT(), note: result.note });
+      appendNote(userId, { timestamp: nowTZ(target.timezone), note: result.note });
       log("INFO", `Saved note for ${userId}: "${result.note.slice(0, 50)}"`);
       await sendText(bot, chatId, result.message);
       addMessage(userId, "assistant", result.message);
@@ -305,7 +305,7 @@ async function handleMessages(
 
     case "log_weight": {
       appendWeight(userId, {
-        timestamp: nowHKT(),
+        timestamp: nowTZ(target.timezone),
         weight_kg: result.weight_kg,
         notes: result.notes || "",
       });
@@ -418,7 +418,7 @@ async function handleMessages(
       await sendText(bot, chatId, "Let me look into that...");
       try {
         const logsDir = getLogDirPath(userId);
-        const answer = await askAboutFoodData(userId, logsDir, prompt);
+        const answer = await askAboutFoodData(userId, logsDir, prompt, target.timezone);
         await sendText(bot, chatId, answer);
         addMessage(userId, "assistant", `[claude]\n${answer}`);
       } catch (err) {
@@ -680,11 +680,12 @@ function setupCommands(bot: TelegramBot): void {
     const question = match![1].trim();
     if (!question) return;
 
+    const target = getTarget(userId);
     addMessage(userId, "user", `/claude ${question}`);
     await sendText(bot, msg.chat.id, "Asking Claude...");
     try {
       const logsDir = getLogDirPath(userId);
-      const answer = await askAboutFoodData(userId, logsDir, question);
+      const answer = await askAboutFoodData(userId, logsDir, question, target.timezone);
       await sendText(bot, msg.chat.id, answer);
       addMessage(userId, "assistant", `[claude]\n${answer}`);
     } catch (err) {
@@ -859,8 +860,11 @@ async function main(): Promise<void> {
 
   setupCommands(bot);
 
-  const buffer = new MessageBuffer(DEBOUNCE_MS, MAX_WAIT_MS, "Asia/Hong_Kong", (userId, msgs, blockId) =>
-    handleMessages(bot, openrouterKey, userId, msgs, blockId),
+  const buffer = new MessageBuffer(
+    DEBOUNCE_MS,
+    MAX_WAIT_MS,
+    (userId) => getTarget(userId).timezone,
+    (userId, msgs, blockId) => handleMessages(bot, openrouterKey, userId, msgs, blockId),
   );
 
   bot.on("message", (msg) => {

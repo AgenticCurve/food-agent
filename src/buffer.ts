@@ -22,10 +22,11 @@ type FlushCallback = (
   blockId: string,
 ) => Promise<void>;
 
+type TimezoneResolver = (userId: string) => string;
+
 /** Format a Unix-seconds timestamp to an ISO 8601 string in a given timezone. */
 function toBlockId(unixSeconds: number, timezone: string): string {
   const d = new Date(unixSeconds * 1000);
-  // Build yyyy-mm-ddTHH:MM:SS in the user's timezone
   const parts = new Intl.DateTimeFormat("sv-SE", {
     timeZone: timezone,
     year: "numeric",
@@ -47,18 +48,18 @@ export class MessageBuffer {
   private ceilingTimers = new Map<string, NodeJS.Timeout>();
   private debounceMs: number;
   private maxWaitMs: number;
-  private timezone: string;
+  private getTimezone: TimezoneResolver;
   private onFlush: FlushCallback;
 
   constructor(
     debounceMs: number,
     maxWaitMs: number,
-    timezone: string,
+    getTimezone: TimezoneResolver,
     onFlush: FlushCallback,
   ) {
     this.debounceMs = debounceMs;
     this.maxWaitMs = maxWaitMs;
-    this.timezone = timezone;
+    this.getTimezone = getTimezone;
     this.onFlush = onFlush;
   }
 
@@ -99,7 +100,8 @@ export class MessageBuffer {
     this.buffers.delete(userId);
 
     if (messages && messages.length > 0) {
-      const blockId = toBlockId(messages[0].date, this.timezone);
+      const tz = this.getTimezone(userId);
+      const blockId = toBlockId(messages[0].date, tz);
       this.onFlush(userId, messages, blockId).catch((err) => {
         console.error(`[buffer] Flush error for ${userId}:`, err);
       });
