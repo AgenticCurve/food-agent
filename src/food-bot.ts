@@ -33,6 +33,7 @@ import {
   getEntriesForDays,
   getLogDirPath,
   nowTZ,
+  extractTime,
 } from "./food-log.js";
 import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
@@ -101,15 +102,10 @@ function isQuietHours(timezone: string): boolean {
  */
 function formatNumberedEntries(
   entries: FoodEntry[],
-  timezone: string,
 ): string {
   return entries
     .map((e, i) => {
-      const time = new Date(e.timestamp).toLocaleTimeString("en-US", {
-        timeZone: timezone,
-        hour: "2-digit",
-        minute: "2-digit",
-      });
+      const time = extractTime(e.timestamp);
       return `#${i + 1}  ${time} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
     })
     .join("\n");
@@ -127,7 +123,7 @@ function formatTodaySummary(
   const total = entries.reduce((sum, e) => sum + e.calories, 0);
   const pct = Math.round((total / target) * 100);
 
-  const lines = [formatNumberedEntries(entries, timezone)];
+  const lines = [formatNumberedEntries(entries)];
   lines.push("");
   lines.push(`**Total: ${total} / ${target} cal (${pct}%)**`);
 
@@ -155,11 +151,6 @@ function buildLogConfirmation(
   const startNum = allTodayEntries.length - newEntries.length + 1;
   const entryLines = newEntries
     .map((e, i) => {
-      const time = new Date(e.timestamp).toLocaleTimeString("en-US", {
-        timeZone: timezone,
-        hour: "2-digit",
-        minute: "2-digit",
-      });
       return `  #${startNum + i}  ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
     })
     .join("\n");

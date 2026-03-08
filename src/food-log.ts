@@ -49,6 +49,12 @@ export function nowHKT(): string {
   return nowTZ(DEFAULT_TZ);
 }
 
+/** Extract HH:MM from an ISO 8601 timestamp (already contains correct local time). */
+export function extractTime(isoTimestamp: string): string {
+  const match = isoTimestamp.match(/T(\d{2}:\d{2})/);
+  return match ? match[1] : "??:??";
+}
+
 function todayTZ(timezone?: string): string {
   return new Date().toLocaleDateString("en-CA", { timeZone: timezone || DEFAULT_TZ });
 }

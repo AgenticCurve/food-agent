@@ -685,16 +685,12 @@ function buildContextBlock(ctx: OrchestratorContext): string {
   const pct = Math.round((ctx.todayCalories / ctx.dailyTarget) * 100);
 
   // --- Today's food log (formatted) ---
+  const extractTime = (ts: string) => ts.match(/T(\d{2}:\d{2})/)?.[1] ?? "??:??";
   const todayLogStr =
     ctx.todayLog.length > 0
       ? ctx.todayLog
           .map((e, i) => {
-            const time = new Date(e.timestamp).toLocaleTimeString("en-US", {
-              timeZone: ctx.timezone,
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-            return `  #${i + 1}  ${time} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
+            return `  #${i + 1}  ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
           })
           .join("\n")
       : "  (nothing logged yet)";
@@ -716,16 +712,8 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     ctx.todaySleep.length > 0
       ? ctx.todaySleep
           .map((s, i) => {
-            const bedTime = new Date(s.start_time).toLocaleTimeString("en-US", {
-              timeZone: ctx.timezone,
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-            const wakeTime = new Date(s.end_time).toLocaleTimeString("en-US", {
-              timeZone: ctx.timezone,
-              hour: "2-digit",
-              minute: "2-digit",
-            });
+            const bedTime = extractTime(s.start_time);
+            const wakeTime = extractTime(s.end_time);
             return `  #${i + 1}  ${s.type === "night" ? "Night" : "Nap"}: ${bedTime} → ${wakeTime} (${s.duration_hours}h, quality: ${s.quality}/10)${s.notes ? ` — ${s.notes}` : ""}`;
           })
           .join("\n")

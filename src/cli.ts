@@ -28,6 +28,7 @@ import {
   getEntriesForDays,
   getLogDirPath,
   nowTZ,
+  extractTime,
 } from "./food-log.js";
 import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
@@ -56,15 +57,10 @@ function printDim(text: string): void {
   console.log(`\x1b[2m${text}\x1b[0m`);
 }
 
-function formatNumberedEntries(entries: FoodEntry[], timezone: string): string {
+function formatNumberedEntries(entries: FoodEntry[]): string {
   return entries
     .map((e, i) => {
-      const time = new Date(e.timestamp).toLocaleTimeString("en-US", {
-        timeZone: timezone,
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-      return `  #${i + 1}  ${time} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
+      return `  #${i + 1}  ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
     })
     .join("\n");
 }
@@ -81,7 +77,7 @@ function formatTodaySummary(
   const total = entries.reduce((sum, e) => sum + e.calories, 0);
   const pct = Math.round((total / target) * 100);
 
-  const lines = [formatNumberedEntries(entries, timezone)];
+  const lines = [formatNumberedEntries(entries)];
   lines.push("");
   lines.push(`Total: ${total} / ${target} cal (${pct}%)`);
 
@@ -160,11 +156,6 @@ async function processInput(
       const startNum = updatedToday.length - entries.length + 1;
       const entryLines = entries
         .map((e, i) => {
-          const time = new Date(e.timestamp).toLocaleTimeString("en-US", {
-            timeZone: target.timezone,
-            hour: "2-digit",
-            minute: "2-digit",
-          });
           return `  #${startNum + i}  ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
         })
         .join("\n");
