@@ -61,7 +61,7 @@ function log(level: string, message: string): void {
 const DEBOUNCE_MS = 2000;
 const MAX_WAIT_MS = 10000;
 const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-const CHECKIN_INTERVAL_MS = 30 * 60 * 1000;
+const CHECKIN_INTERVAL_MS = 2 * 60 * 60 * 1000;
 const QUIET_HOUR_START = 1;
 const QUIET_HOUR_END = 7;
 const MIN_GAP_SINCE_ACTIVITY_MS = 20 * 60 * 1000;
