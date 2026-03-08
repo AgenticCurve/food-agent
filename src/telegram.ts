@@ -60,6 +60,7 @@ function log(level: string, message: string): void {
 
 const DEBOUNCE_MS = 2000;
 const MAX_WAIT_MS = 10000;
+const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
 const CHECKIN_INTERVAL_MS = 30 * 60 * 1000;
 const QUIET_HOUR_START = 1;
 const QUIET_HOUR_END = 7;
@@ -176,11 +177,19 @@ async function handleMessages(
   openrouterKey: string,
   userId: string,
   messages: BufferedMessage[],
+  blockId: string,
 ): Promise<void> {
   const chatId = messages[0].chatId;
   const combined = messages.map((m) => m.text).join("\n");
 
-  log("INFO", `Processing message from ${userId}: "${combined.slice(0, 100)}"`);
+  // Detect stale messages (bot was down when user sent them)
+  const firstMsgAge = Date.now() - messages[0].date * 1000;
+  if (firstMsgAge > STALE_THRESHOLD_MS) {
+    const minsAgo = Math.round(firstMsgAge / 60000);
+    log("WARN", `Stale block [${blockId}] from ${userId}: ${messages.length} message(s) sent ${minsAgo} min ago`);
+  }
+
+  log("INFO", `[${blockId}] Processing ${messages.length} message(s) from ${userId}: "${combined.slice(0, 100)}"`);
 
   ensureUserRepo(userId);
   lastUserMessageTime.set(userId, Date.now());
@@ -449,7 +458,7 @@ async function handleMessages(
   // Auto-commit user data after every round
   const commitMsg = buildCommitMessage(result);
   if (commitMsg) {
-    commitUserData(userId, commitMsg);
+    commitUserData(userId, `[${blockId}] ${commitMsg}`);
   }
 }
 
@@ -850,8 +859,8 @@ async function main(): Promise<void> {
 
   setupCommands(bot);
 
-  const buffer = new MessageBuffer(DEBOUNCE_MS, MAX_WAIT_MS, (userId, msgs) =>
-    handleMessages(bot, openrouterKey, userId, msgs),
+  const buffer = new MessageBuffer(DEBOUNCE_MS, MAX_WAIT_MS, "Asia/Hong_Kong", (userId, msgs, blockId) =>
+    handleMessages(bot, openrouterKey, userId, msgs, blockId),
   );
 
   bot.on("message", (msg) => {
@@ -870,6 +879,7 @@ async function main(): Promise<void> {
       text: msg.text,
       messageId: msg.message_id,
       chatId: msg.chat.id,
+      date: msg.date ?? Math.floor(Date.now() / 1000),
     });
   });
 
