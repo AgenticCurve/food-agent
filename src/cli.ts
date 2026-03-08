@@ -30,7 +30,13 @@ import {
 import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
 import { getHistory, addMessage, clearHistory } from "./history.js";
-import type { FoodEntry } from "./types.js";
+import {
+  appendSleepEntry,
+  getTodaySleep,
+  updateSleepEntry,
+  removeSleepEntry,
+} from "./sleep-log.js";
+import type { FoodEntry, SleepEntry } from "./types.js";
 
 // --- Helpers ---
 
@@ -108,6 +114,8 @@ async function processInput(
     knownFoods,
     chatHistory: history,
     logsDir: getLogDirPath(userId),
+    userId,
+    todaySleep: getTodaySleep(userId, target.timezone),
   };
 
   let result;
@@ -164,61 +172,114 @@ async function processInput(
       break;
     }
 
+    case "log_sleep": {
+      const startMs = new Date(result.entry.start_time).getTime();
+      const endMs = new Date(result.entry.end_time).getTime();
+      const durationHours =
+        Math.round(((endMs - startMs) / 3600000) * 10) / 10;
+      const today = new Date()
+        .toLocaleDateString("en-CA", { timeZone: target.timezone });
+      const sleepEntry: SleepEntry = {
+        date: today,
+        type: result.entry.type,
+        start_time: result.entry.start_time,
+        end_time: result.entry.end_time,
+        duration_hours: durationHours,
+        quality: result.entry.quality,
+        notes: result.entry.notes || "",
+      };
+      appendSleepEntry(userId, sleepEntry);
+      print(result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
     case "edit_entry": {
-      const updates: Partial<FoodEntry> = {};
-      if (result.updates.food_item !== undefined)
-        updates.food_item = result.updates.food_item;
-      if (result.updates.quantity !== undefined)
-        updates.quantity = result.updates.quantity;
-      if (result.updates.unit !== undefined)
-        updates.unit = result.updates.unit;
-      if (result.updates.calories !== undefined)
-        updates.calories = result.updates.calories;
-      if (result.updates.timestamp !== undefined)
-        updates.timestamp = result.updates.timestamp;
-
-      if (updates.quantity !== undefined && updates.calories === undefined) {
-        const entry = todayEntries[result.entry_number - 1];
-        if (entry && entry.quantity > 0) {
-          updates.calories = Math.round(
-            (entry.calories / entry.quantity) * updates.quantity,
-          );
+      if (result.log_type === "sleep") {
+        const today = new Date()
+          .toLocaleDateString("en-CA", { timeZone: target.timezone });
+        const updates = result.updates as Partial<SleepEntry>;
+        if (updates.start_time || updates.end_time) {
+          const todaySleepEntries = getTodaySleep(userId, target.timezone);
+          const existing = todaySleepEntries[result.entry_number - 1];
+          if (existing) {
+            const st = updates.start_time || existing.start_time;
+            const et = updates.end_time || existing.end_time;
+            updates.duration_hours =
+              Math.round(
+                ((new Date(et).getTime() - new Date(st).getTime()) / 3600000) *
+                  10,
+              ) / 10;
+          }
         }
-      }
-
-      const updated = updateTodayEntry(
-        userId,
-        result.entry_number,
-        updates,
-        target.timezone,
-      );
-
-      if (updated) {
-        if (updated.quantity > 0) {
-          addFood(updated.food_item, {
-            calories: Math.round(updated.calories / updated.quantity),
-            unit: updated.unit,
-            quantity: 1,
-          });
+        const updated = updateSleepEntry(
+          userId,
+          today,
+          result.entry_number,
+          updates,
+        );
+        if (updated) {
+          print(result.message);
+        } else {
+          print(`Couldn't find sleep entry #${result.entry_number} in today's log.`);
         }
-        print(result.message);
       } else {
-        print(`Couldn't find entry #${result.entry_number} in today's log.`);
+        const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
+
+        if (updates.quantity !== undefined && updates.calories === undefined) {
+          const entry = todayEntries[result.entry_number - 1];
+          if (entry && entry.quantity > 0) {
+            updates.calories = Math.round(
+              (entry.calories / entry.quantity) * updates.quantity,
+            );
+          }
+        }
+
+        const updated = updateTodayEntry(
+          userId,
+          result.entry_number,
+          updates,
+          target.timezone,
+        );
+
+        if (updated) {
+          if (updated.quantity > 0) {
+            addFood(updated.food_item, {
+              calories: Math.round(updated.calories / updated.quantity),
+              unit: updated.unit,
+              quantity: 1,
+            });
+          }
+          print(result.message);
+        } else {
+          print(`Couldn't find entry #${result.entry_number} in today's log.`);
+        }
       }
       addMessage(userId, "assistant", result.message);
       break;
     }
 
     case "remove_entry": {
-      const removed = removeTodayEntry(
-        userId,
-        result.entry_number,
-        target.timezone,
-      );
-      if (removed) {
-        print(result.message);
+      if (result.log_type === "sleep") {
+        const today = new Date()
+          .toLocaleDateString("en-CA", { timeZone: target.timezone });
+        const removed = removeSleepEntry(userId, today, result.entry_number);
+        if (removed) {
+          print(result.message);
+        } else {
+          print(`Couldn't find sleep entry #${result.entry_number} in today's log.`);
+        }
       } else {
-        print(`Couldn't find entry #${result.entry_number} in today's log.`);
+        const removed = removeTodayEntry(
+          userId,
+          result.entry_number,
+          target.timezone,
+        );
+        if (removed) {
+          print(result.message);
+        } else {
+          print(`Couldn't find entry #${result.entry_number} in today's log.`);
+        }
       }
       addMessage(userId, "assistant", result.message);
       break;

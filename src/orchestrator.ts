@@ -9,7 +9,12 @@
 
 import fs from "fs";
 import path from "path";
-import type { FoodEntry, NutritionInfo, ChatMessage } from "./types.js";
+import type { FoodEntry, NutritionInfo, ChatMessage, SleepEntry } from "./types.js";
+import {
+  getSleepEntriesForDateRange,
+  grepSleepLogs,
+  listSleepCsvFiles,
+} from "./sleep-log.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3.1-flash-lite-preview";
@@ -98,7 +103,22 @@ DATA STRUCTURE:
 The user's food logs are stored as CSV files organized by date:
   logs/{userId}/{yyyy}/{mm}/{yyyy-mm-dd}.csv
   Schema: timestamp,food_item,quantity,unit,calories,notes
+Sleep logs are stored monthly:
+  logs/{userId}/sleep/{yyyy}-{mm}.csv
+  Schema: date,type,start_time,end_time,duration_hours,quality,notes
   chat-history.json contains the recent conversation history.
+
+SLEEP TRACKING:
+- Users can log their sleep: when they went to bed, when they woke up, and how they'd rate it
+- Use log_sleep to record sleep. It needs: type (night or nap), start_time, end_time, quality (1-10), and optional notes
+- The system auto-calculates duration from start_time and end_time
+- Night sleep typically crosses midnight — start_time is previous evening, end_time is next morning
+- Naps are same-day short sleeps
+- Quality is rated 1-10 (1=terrible, 10=perfect). Map user language: "great"→8-9, "good"→7, "okay"→5-6, "bad"→3, "terrible"→1-2
+- If user says "slept well" but gives no times, ask for bed time and wake time before logging
+- If user gives times but no quality, ask how they'd rate it 1-10
+- For editing/removing sleep entries, use edit_entry/remove_entry with log_type="sleep"
+- The entry_number for sleep refers to today's sleep entries (#1, #2, etc.)
 
 CHECK-INS:
 - When you see [CHECK-IN], generate a brief, natural check-in message
@@ -107,7 +127,8 @@ CHECK-INS:
 - Keep it casual and human: "Hey! Had anything since that sandwich?" not "REMINDER: Please log your food intake"
 - If they're behind on calories, encourage eating; if on track, acknowledge it
 - Sometimes just ask how their day is going — don't always lead with food
-- If it's meal time and they haven't logged, gently note it`;
+- If it's meal time and they haven't logged, gently note it
+- When you see [SLEEP-CHECK-IN], ask about last night's sleep — when they went to bed, when they woke up, and how they'd rate it. Keep it casual: "Morning! How'd you sleep?" not "SLEEP CHECK-IN: Please log your sleep data"`;
 
 // --- Tools ---
 
@@ -169,37 +190,105 @@ const TOOLS = [
   {
     type: "function" as const,
     function: {
-      name: "edit_entry",
+      name: "log_sleep",
       description:
-        "Edit an existing entry in today's food log by its daily number (#1, #2, etc.).",
+        "Log a sleep entry. Call when you have bed time, wake time, and quality rating.",
       parameters: {
         type: "object",
         properties: {
+          type: {
+            type: "string",
+            enum: ["night", "nap"],
+            description: "Type of sleep: night (overnight) or nap (daytime)",
+          },
+          start_time: {
+            type: "string",
+            description:
+              "When they went to bed/started nap — ISO 8601 with +08:00 offset (e.g. 2026-03-07T23:00:00+08:00)",
+          },
+          end_time: {
+            type: "string",
+            description:
+              "When they woke up — ISO 8601 with +08:00 offset (e.g. 2026-03-08T07:00:00+08:00)",
+          },
+          quality: {
+            type: "number",
+            description: "Sleep quality rating from 1 (terrible) to 10 (perfect)",
+          },
+          notes: {
+            type: "string",
+            description:
+              "Optional notes (e.g. 'woke up twice', 'very refreshing', 'restless')",
+          },
+          message: {
+            type: "string",
+            description: "Brief confirmation message for the user",
+          },
+        },
+        required: ["type", "start_time", "end_time", "quality", "message"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "edit_entry",
+      description:
+        "Edit an existing entry in today's log by its daily number (#1, #2, etc.). Works for both food and sleep logs — set log_type accordingly. For food: use food_item, quantity, unit, calories, timestamp. For sleep: use sleep_type, start_time, end_time, quality, notes.",
+      parameters: {
+        type: "object",
+        properties: {
+          log_type: {
+            type: "string",
+            enum: ["food", "sleep"],
+            description: "Which log to edit (default: food)",
+          },
           entry_number: {
             type: "number",
             description: "The entry number from today's log (1-based)",
           },
           food_item: {
             type: "string",
-            description: "Updated food name (omit to keep current)",
+            description: "Updated food name (food only, omit to keep current)",
           },
           quantity: {
             type: "number",
-            description: "Updated quantity (omit to keep current)",
+            description: "Updated quantity (food only, omit to keep current)",
           },
           unit: {
             type: "string",
-            description: "Updated unit (omit to keep current)",
+            description: "Updated unit (food only, omit to keep current)",
           },
           calories: {
             type: "number",
             description:
-              "Updated total calories for the new quantity. MUST be provided if quantity changes.",
+              "Updated total calories (food only). MUST be provided if quantity changes.",
           },
           timestamp: {
             type: "string",
             description:
-              "Updated timestamp as ISO 8601 with +08:00 offset. Use to correct when the user ate.",
+              "Updated timestamp as ISO 8601 with +08:00 offset (food only).",
+          },
+          sleep_type: {
+            type: "string",
+            enum: ["night", "nap"],
+            description: "Updated sleep type (sleep only)",
+          },
+          start_time: {
+            type: "string",
+            description: "Updated bed time as ISO 8601 +08:00 (sleep only)",
+          },
+          end_time: {
+            type: "string",
+            description: "Updated wake time as ISO 8601 +08:00 (sleep only)",
+          },
+          quality: {
+            type: "number",
+            description: "Updated sleep quality 1-10 (sleep only)",
+          },
+          notes: {
+            type: "string",
+            description: "Updated notes (sleep only)",
           },
           message: {
             type: "string",
@@ -215,10 +304,15 @@ const TOOLS = [
     function: {
       name: "remove_entry",
       description:
-        "Remove an entry from today's food log by its daily number (#1, #2, etc.).",
+        "Remove an entry from today's log by its daily number (#1, #2, etc.). Works for both food and sleep logs — set log_type accordingly.",
       parameters: {
         type: "object",
         properties: {
+          log_type: {
+            type: "string",
+            enum: ["food", "sleep"],
+            description: "Which log to remove from (default: food)",
+          },
           entry_number: {
             type: "number",
             description: "The entry number from today's log (1-based)",
@@ -335,10 +429,15 @@ const TOOLS = [
     function: {
       name: "get_entries",
       description:
-        "Retrieve food log entries for a date range. Returns CSV data for all entries between start_date and end_date (inclusive). Use for questions about past days, weekly reviews, or comparing periods.",
+        "Retrieve log entries for a date range. Returns CSV data for all entries between start_date and end_date (inclusive). Works for both food and sleep logs — set log_type accordingly.",
       parameters: {
         type: "object",
         properties: {
+          log_type: {
+            type: "string",
+            enum: ["food", "sleep"],
+            description: "Which log to query (default: food)",
+          },
           start_date: {
             type: "string",
             description: "Start date in yyyy-mm-dd format",
@@ -357,14 +456,19 @@ const TOOLS = [
     function: {
       name: "grep_logs",
       description:
-        "Search all food log entries for a text pattern (case-insensitive). Returns matching entries with their dates. Use for finding when a specific food was eaten, how often something appears, etc.",
+        "Search all log entries for a text pattern (case-insensitive). Returns matching entries with their dates. Works for both food and sleep logs — set log_type accordingly.",
       parameters: {
         type: "object",
         properties: {
+          log_type: {
+            type: "string",
+            enum: ["food", "sleep"],
+            description: "Which log to search (default: food)",
+          },
           pattern: {
             type: "string",
             description:
-              "Text to search for (e.g. 'pizza', 'vitamin', 'chicken')",
+              "Text to search for (e.g. 'pizza', 'vitamin', 'nap', 'night')",
           },
         },
         required: ["pattern"],
@@ -389,18 +493,29 @@ export type OrchestratorResult =
       message: string;
     }
   | {
-      type: "edit_entry";
-      entry_number: number;
-      updates: {
-        food_item?: string;
-        quantity?: number;
-        unit?: string;
-        calories?: number;
-        timestamp?: string;
+      type: "log_sleep";
+      entry: {
+        type: "night" | "nap";
+        start_time: string;
+        end_time: string;
+        quality: number;
+        notes?: string;
       };
       message: string;
     }
-  | { type: "remove_entry"; entry_number: number; message: string }
+  | {
+      type: "edit_entry";
+      log_type: "food" | "sleep";
+      entry_number: number;
+      updates: Record<string, unknown>;
+      message: string;
+    }
+  | {
+      type: "remove_entry";
+      log_type: "food" | "sleep";
+      entry_number: number;
+      message: string;
+    }
   | { type: "ask_claude"; question: string }
   | { type: "tell_claude"; instruction: string }
   | { type: "set_target"; daily_calories: number; message: string }
@@ -438,6 +553,8 @@ export interface OrchestratorContext {
   knownFoods: Record<string, NutritionInfo>;
   chatHistory: ChatMessage[];
   logsDir: string;
+  userId: string;
+  todaySleep: SleepEntry[];
 }
 
 function buildContextBlock(ctx: OrchestratorContext): string {
@@ -495,14 +612,37 @@ function buildContextBlock(ctx: OrchestratorContext): string {
       lastFoodAgo = `Last food logged: ${Math.round(mins / 60)} hours ago`;
   }
 
+  // Build sleep summary
+  const todaySleepStr =
+    ctx.todaySleep.length > 0
+      ? ctx.todaySleep
+          .map((s, i) => {
+            const bedTime = new Date(s.start_time).toLocaleTimeString("en-US", {
+              timeZone: ctx.timezone,
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            const wakeTime = new Date(s.end_time).toLocaleTimeString("en-US", {
+              timeZone: ctx.timezone,
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            return `  #${i + 1}  ${s.type === "night" ? "Night" : "Nap"}: ${bedTime} → ${wakeTime} (${s.duration_hours}h, quality: ${s.quality}/10)${s.notes ? ` — ${s.notes}` : ""}`;
+          })
+          .join("\n")
+      : "  (no sleep logged today)";
+
   const parts = [
     `Current time (HKT): ${timeStr}`,
     `Daily target: ${ctx.dailyTarget} cal`,
     `Today's intake: ${ctx.todayCalories} cal (${pct}%)`,
     lastFoodAgo,
     "",
-    "Today's log:",
+    "Today's food log:",
     todayLogStr,
+    "",
+    "Today's sleep log:",
+    todaySleepStr,
   ];
 
   if (knownFoodsStr) {
@@ -518,7 +658,11 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     const dateFiles = listCsvFiles(ctx.logsDir);
     if (dateFiles.length > 0) {
       const dates = dateFiles.map((f) => path.basename(f, ".csv"));
-      parts.push("", `Available dates (${dates.length} files): ${dates.join(", ")}`);
+      parts.push("", `Available food dates (${dates.length} files): ${dates.join(", ")}`);
+    }
+    const sleepFiles = listSleepCsvFiles(ctx.userId);
+    if (sleepFiles.length > 0) {
+      parts.push(`Available sleep files: ${sleepFiles.join(", ")}`);
     }
   }
 
@@ -702,11 +846,19 @@ export async function processMessage(
       }
 
       if (call.function.name === "get_entries") {
-        const result = getEntriesForDateRange(
-          context.logsDir,
-          parsed.start_date as string,
-          parsed.end_date as string,
-        );
+        const logType = (parsed.log_type as string) || "food";
+        const result =
+          logType === "sleep"
+            ? getSleepEntriesForDateRange(
+                context.userId,
+                parsed.start_date as string,
+                parsed.end_date as string,
+              )
+            : getEntriesForDateRange(
+                context.logsDir,
+                parsed.start_date as string,
+                parsed.end_date as string,
+              );
         messages.push({
           role: "assistant",
           content: null,
@@ -721,7 +873,11 @@ export async function processMessage(
       }
 
       if (call.function.name === "grep_logs") {
-        const result = grepLogs(context.logsDir, parsed.pattern as string);
+        const logType = (parsed.log_type as string) || "food";
+        const result =
+          logType === "sleep"
+            ? grepSleepLogs(context.userId, parsed.pattern as string)
+            : grepLogs(context.logsDir, parsed.pattern as string);
         messages.push({
           role: "assistant",
           content: null,
@@ -753,26 +909,42 @@ export async function processMessage(
           };
         }
 
+        case "log_sleep": {
+          return {
+            type: "log_sleep",
+            entry: {
+              type: (parsed.type as "night" | "nap") || "night",
+              start_time: parsed.start_time as string,
+              end_time: parsed.end_time as string,
+              quality: parsed.quality as number,
+              notes: (parsed.notes as string) || undefined,
+            },
+            message: (parsed.message as string) || "Sleep logged!",
+          };
+        }
+
         case "edit_entry": {
           const updates: Record<string, unknown> = {};
-          if (parsed.food_item !== undefined) updates.food_item = parsed.food_item;
-          if (parsed.quantity !== undefined) updates.quantity = parsed.quantity;
-          if (parsed.unit !== undefined) updates.unit = parsed.unit;
-          if (parsed.calories !== undefined) updates.calories = parsed.calories;
-          if (parsed.timestamp !== undefined) {
-            updates.timestamp = parsed.timestamp as string;
+          const logType = ((parsed.log_type as string) || "food") as "food" | "sleep";
+          if (logType === "sleep") {
+            if (parsed.sleep_type !== undefined) updates.type = parsed.sleep_type;
+            if (parsed.start_time !== undefined) updates.start_time = parsed.start_time;
+            if (parsed.end_time !== undefined) updates.end_time = parsed.end_time;
+            if (parsed.quality !== undefined) updates.quality = parsed.quality;
+            if (parsed.notes !== undefined) updates.notes = parsed.notes;
+          } else {
+            if (parsed.food_item !== undefined) updates.food_item = parsed.food_item;
+            if (parsed.quantity !== undefined) updates.quantity = parsed.quantity;
+            if (parsed.unit !== undefined) updates.unit = parsed.unit;
+            if (parsed.calories !== undefined) updates.calories = parsed.calories;
+            if (parsed.timestamp !== undefined) updates.timestamp = parsed.timestamp;
           }
 
           return {
             type: "edit_entry",
+            log_type: logType,
             entry_number: parsed.entry_number as number,
-            updates: updates as {
-              food_item?: string;
-              quantity?: number;
-              unit?: string;
-              calories?: number;
-              timestamp?: string;
-            },
+            updates,
             message: (parsed.message as string) || "Updated!",
           };
         }
@@ -780,6 +952,7 @@ export async function processMessage(
         case "remove_entry":
           return {
             type: "remove_entry",
+            log_type: ((parsed.log_type as string) || "food") as "food" | "sleep",
             entry_number: parsed.entry_number as number,
             message: (parsed.message as string) || "Removed!",
           };

@@ -36,7 +36,13 @@ import { loadNutritionDB, addFood } from "./nutrition-db.js";
 import { getTarget, setTarget } from "./targets.js";
 import { getHistory, addMessage, clearHistory } from "./history.js";
 import { markdownToTelegramHtml } from "./format.js";
-import type { FoodEntry } from "./types.js";
+import {
+  appendSleepEntry,
+  getTodaySleep,
+  updateSleepEntry,
+  removeSleepEntry,
+} from "./sleep-log.js";
+import type { FoodEntry, SleepEntry } from "./types.js";
 
 // --- Logging ---
 
@@ -187,6 +193,8 @@ async function handleMessages(
     knownFoods,
     chatHistory: history,
     logsDir: getLogDirPath(userId),
+    userId,
+    todaySleep: getTodaySleep(userId, target.timezone),
   };
 
   let result;
@@ -245,73 +253,140 @@ async function handleMessages(
       break;
     }
 
-    case "edit_entry": {
-      const updates: Partial<FoodEntry> = {};
-      if (result.updates.food_item !== undefined)
-        updates.food_item = result.updates.food_item;
-      if (result.updates.quantity !== undefined)
-        updates.quantity = result.updates.quantity;
-      if (result.updates.unit !== undefined)
-        updates.unit = result.updates.unit;
-      if (result.updates.calories !== undefined)
-        updates.calories = result.updates.calories;
-      if (result.updates.timestamp !== undefined)
-        updates.timestamp = result.updates.timestamp;
+    case "log_sleep": {
+      const startMs = new Date(result.entry.start_time).getTime();
+      const endMs = new Date(result.entry.end_time).getTime();
+      const durationHours =
+        Math.round(((endMs - startMs) / 3600000) * 10) / 10;
+      const today = new Date()
+        .toLocaleDateString("en-CA", { timeZone: target.timezone });
+      const sleepEntry: SleepEntry = {
+        date: today,
+        type: result.entry.type,
+        start_time: result.entry.start_time,
+        end_time: result.entry.end_time,
+        duration_hours: durationHours,
+        quality: result.entry.quality,
+        notes: result.entry.notes || "",
+      };
+      appendSleepEntry(userId, sleepEntry);
+      log(
+        "INFO",
+        `Logged sleep for ${userId}: ${sleepEntry.type} ${durationHours}h quality=${sleepEntry.quality}/10`,
+      );
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
 
-      // If quantity changed but no calories provided, recalculate
-      if (updates.quantity !== undefined && updates.calories === undefined) {
-        const entry = todayEntries[result.entry_number - 1];
-        if (entry && entry.quantity > 0) {
-          updates.calories = Math.round(
-            (entry.calories / entry.quantity) * updates.quantity,
+    case "edit_entry": {
+      if (result.log_type === "sleep") {
+        const today = new Date()
+          .toLocaleDateString("en-CA", { timeZone: target.timezone });
+        const updates = result.updates as Partial<SleepEntry>;
+        // Recalculate duration if times changed
+        if (updates.start_time || updates.end_time) {
+          const todaySleepEntries = getTodaySleep(userId, target.timezone);
+          const existing = todaySleepEntries[result.entry_number - 1];
+          if (existing) {
+            const st = updates.start_time || existing.start_time;
+            const et = updates.end_time || existing.end_time;
+            updates.duration_hours =
+              Math.round(
+                ((new Date(et).getTime() - new Date(st).getTime()) / 3600000) *
+                  10,
+              ) / 10;
+          }
+        }
+        const updated = updateSleepEntry(
+          userId,
+          today,
+          result.entry_number,
+          updates,
+        );
+        if (updated) {
+          log("INFO", `Edited sleep #${result.entry_number} for ${userId}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(
+            bot,
+            chatId,
+            `Couldn't find sleep entry #${result.entry_number} in today's log.`,
           );
         }
-      }
-
-      const updated = updateTodayEntry(
-        userId,
-        result.entry_number,
-        updates,
-        target.timezone,
-      );
-
-      if (updated) {
-        // Update nutrition DB
-        if (updated.quantity > 0) {
-          addFood(updated.food_item, {
-            calories: Math.round(updated.calories / updated.quantity),
-            unit: updated.unit,
-            quantity: 1,
-          });
-        }
-        log("INFO", `Edited #${result.entry_number} for ${userId}: ${updated.food_item} (${updated.calories} cal)`);
-        await sendText(bot, chatId, result.message);
       } else {
-        await sendText(
-          bot,
-          chatId,
-          `Couldn't find entry #${result.entry_number} in today's log.`,
+        const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
+
+        // If quantity changed but no calories provided, recalculate
+        if (updates.quantity !== undefined && updates.calories === undefined) {
+          const entry = todayEntries[result.entry_number - 1];
+          if (entry && entry.quantity > 0) {
+            updates.calories = Math.round(
+              (entry.calories / entry.quantity) * updates.quantity,
+            );
+          }
+        }
+
+        const updated = updateTodayEntry(
+          userId,
+          result.entry_number,
+          updates,
+          target.timezone,
         );
+
+        if (updated) {
+          if (updated.quantity > 0) {
+            addFood(updated.food_item, {
+              calories: Math.round(updated.calories / updated.quantity),
+              unit: updated.unit,
+              quantity: 1,
+            });
+          }
+          log("INFO", `Edited #${result.entry_number} for ${userId}: ${updated.food_item} (${updated.calories} cal)`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(
+            bot,
+            chatId,
+            `Couldn't find entry #${result.entry_number} in today's log.`,
+          );
+        }
       }
       addMessage(userId, "assistant", result.message);
       break;
     }
 
     case "remove_entry": {
-      const removed = removeTodayEntry(
-        userId,
-        result.entry_number,
-        target.timezone,
-      );
-      if (removed) {
-        log("INFO", `Removed #${result.entry_number} for ${userId}: ${removed.food_item}`);
-        await sendText(bot, chatId, result.message);
+      if (result.log_type === "sleep") {
+        const today = new Date()
+          .toLocaleDateString("en-CA", { timeZone: target.timezone });
+        const removed = removeSleepEntry(userId, today, result.entry_number);
+        if (removed) {
+          log("INFO", `Removed sleep #${result.entry_number} for ${userId}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(
+            bot,
+            chatId,
+            `Couldn't find sleep entry #${result.entry_number} in today's log.`,
+          );
+        }
       } else {
-        await sendText(
-          bot,
-          chatId,
-          `Couldn't find entry #${result.entry_number} in today's log.`,
+        const removed = removeTodayEntry(
+          userId,
+          result.entry_number,
+          target.timezone,
         );
+        if (removed) {
+          log("INFO", `Removed #${result.entry_number} for ${userId}: ${removed.food_item}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(
+            bot,
+            chatId,
+            `Couldn't find entry #${result.entry_number} in today's log.`,
+          );
+        }
       }
       addMessage(userId, "assistant", result.message);
       break;
@@ -605,6 +680,8 @@ function startCheckins(bot: TelegramBot, openrouterKey: string): void {
           knownFoods: loadNutritionDB(),
           chatHistory: getHistory(userId),
           logsDir: getLogDirPath(userId),
+          userId,
+          todaySleep: getTodaySleep(userId, target.timezone),
         };
 
         const result = await processMessage(
@@ -624,6 +701,88 @@ function startCheckins(bot: TelegramBot, openrouterKey: string): void {
       }
     }
   }, CHECKIN_INTERVAL_MS);
+}
+
+// --- Sleep check-in (daily at 10am) ---
+
+const lastSleepCheckinDate = new Map<string, string>();
+
+function startSleepCheckins(bot: TelegramBot, openrouterKey: string): void {
+  log("INFO", "Sleep check-ins enabled: daily at 10:00 AM");
+
+  // Check every 5 minutes if it's 10:00 AM for any user
+  setInterval(async () => {
+    const users = listApprovedUsers();
+
+    for (const user of users) {
+      const userId = user.senderId;
+      const chatId = parseInt(userId, 10);
+      if (isNaN(chatId)) continue;
+
+      const target = getTarget(userId);
+
+      // Check if it's 10:00 AM (10:00-10:04 window to match 5-min interval)
+      const now = new Date();
+      const hourStr = now.toLocaleString("en-US", {
+        timeZone: target.timezone,
+        hour: "numeric",
+        hour12: false,
+      });
+      const minStr = now.toLocaleString("en-US", {
+        timeZone: target.timezone,
+        minute: "numeric",
+      });
+      const hour = parseInt(hourStr, 10);
+      const min = parseInt(minStr, 10);
+      if (hour !== 10 || min >= 5) continue;
+
+      // Only once per day
+      const today = now.toLocaleDateString("en-CA", {
+        timeZone: target.timezone,
+      });
+      if (lastSleepCheckinDate.get(userId) === today) continue;
+
+      // Skip if user already logged sleep today
+      const todaySleepEntries = getTodaySleep(userId, target.timezone);
+      if (todaySleepEntries.some((s) => s.type === "night")) continue;
+
+      lastSleepCheckinDate.set(userId, today);
+
+      try {
+        const todayEntries = getTodayEntries(userId, target.timezone);
+        const todayCalories = todayEntries.reduce(
+          (sum, e) => sum + e.calories,
+          0,
+        );
+
+        const context: OrchestratorContext = {
+          todayLog: todayEntries,
+          todayCalories,
+          dailyTarget: target.daily_calories,
+          timezone: target.timezone,
+          knownFoods: loadNutritionDB(),
+          chatHistory: getHistory(userId),
+          logsDir: getLogDirPath(userId),
+          userId,
+          todaySleep: todaySleepEntries,
+        };
+
+        const result = await processMessage(
+          `[SLEEP-CHECK-IN] Morning check-in — ask the user about last night's sleep.`,
+          context,
+          openrouterKey,
+        );
+
+        if (result.type === "message") {
+          await sendText(bot, chatId, result.text);
+          addMessage(userId, "assistant", result.text);
+          log("INFO", `Sleep check-in sent to ${userId}`);
+        }
+      } catch (err) {
+        log("WARN", `Sleep check-in failed for ${userId}: ${(err as Error).message}`);
+      }
+    }
+  }, 5 * 60 * 1000); // every 5 minutes
 }
 
 // --- Main ---
@@ -670,6 +829,7 @@ async function main(): Promise<void> {
   });
 
   startCheckins(bot, openrouterKey);
+  startSleepCheckins(bot, openrouterKey);
 
   process.on("SIGINT", () => {
     log("INFO", "Shutting down...");
