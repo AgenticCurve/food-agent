@@ -47,6 +47,7 @@ import {
 import { appendNote, updateNote, removeNote } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
+import { ensureUserRepo, commitUserData } from "./user-git.js";
 
 // --- Logging ---
 
@@ -57,7 +58,8 @@ function log(level: string, message: string): void {
 
 // --- Config ---
 
-const DEBOUNCE_MS = 1500;
+const DEBOUNCE_MS = 2000;
+const MAX_WAIT_MS = 10000;
 const CHECKIN_INTERVAL_MS = 30 * 60 * 1000;
 const QUIET_HOUR_START = 1;
 const QUIET_HOUR_END = 7;
@@ -180,6 +182,7 @@ async function handleMessages(
 
   log("INFO", `Processing message from ${userId}: "${combined.slice(0, 100)}"`);
 
+  ensureUserRepo(userId);
   lastUserMessageTime.set(userId, Date.now());
   addMessage(userId, "user", combined);
 
@@ -441,6 +444,40 @@ async function handleMessages(
       addMessage(userId, "assistant", result.text);
       break;
     }
+  }
+
+  // Auto-commit user data after every round
+  const commitMsg = buildCommitMessage(result);
+  if (commitMsg) {
+    commitUserData(userId, commitMsg);
+  }
+}
+
+function buildCommitMessage(result: { type: string; [k: string]: unknown }): string {
+  switch (result.type) {
+    case "log_food": {
+      const entries = result.entries as Array<{ food_item: string; calories: number }>;
+      const items = entries.map((e) => `${e.food_item} (${e.calories} cal)`).join(", ");
+      return `log_food: ${items}`;
+    }
+    case "log_sleep": {
+      const entry = result.entry as { type: string; quality: number };
+      return `log_sleep: ${entry.type} (quality ${entry.quality}/10)`;
+    }
+    case "log_note":
+      return `log_note: ${(result.note as string).slice(0, 60)}`;
+    case "log_weight":
+      return `log_weight: ${result.weight_kg} kg`;
+    case "edit_entry":
+      return `edit_entry: ${result.log_type} #${result.entry_number}`;
+    case "remove_entry":
+      return `remove_entry: ${result.log_type} #${result.entry_number}`;
+    case "set_target":
+      return `set_target: ${result.daily_calories} cal`;
+    case "set_timezone":
+      return `set_timezone: ${result.timezone}`;
+    default:
+      return "";
   }
 }
 
@@ -813,7 +850,7 @@ async function main(): Promise<void> {
 
   setupCommands(bot);
 
-  const buffer = new MessageBuffer(DEBOUNCE_MS, (userId, msgs) =>
+  const buffer = new MessageBuffer(DEBOUNCE_MS, MAX_WAIT_MS, (userId, msgs) =>
     handleMessages(bot, openrouterKey, userId, msgs),
   );
 

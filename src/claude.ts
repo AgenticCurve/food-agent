@@ -114,6 +114,7 @@ function listCsvFilesRecursive(dir: string): string[] {
 
   function walk(d: string, prefix: string): void {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      if (entry.name === ".git") continue;
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(path.join(d, entry.name), rel);

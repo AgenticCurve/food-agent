@@ -27,7 +27,7 @@ import {
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3.1-flash-lite-preview";
-const MAX_TOOL_ROUNDS = 3;
+const MAX_TOOL_ROUNDS = 10;
 
 function log(level: string, message: string): void {
   const ts = new Date().toISOString();
@@ -653,9 +653,9 @@ function buildDirTree(dir: string): string {
   const lines: string[] = [];
 
   function walk(d: string, prefix: string, indent: string): void {
-    const entries = fs.readdirSync(d, { withFileTypes: true }).sort((a, b) =>
-      a.name.localeCompare(b.name),
-    );
+    const entries = fs.readdirSync(d, { withFileTypes: true })
+      .filter((e) => e.name !== ".git")
+      .sort((a, b) => a.name.localeCompare(b.name));
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
       const isLast = i === entries.length - 1;
@@ -866,6 +866,7 @@ function listCsvFiles(dir: string): string[] {
   const results: string[] = [];
   function walk(d: string, prefix: string): void {
     for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      if (entry.name === ".git") continue;
       const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(path.join(d, entry.name), rel);
       else if (entry.name.endsWith(".csv")) results.push(rel);
