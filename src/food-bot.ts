@@ -49,6 +49,7 @@ import { appendNote, updateNote, removeNote } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
+import { transcribeAudio } from "./transcribe.js";
 
 // --- Logging ---
 
@@ -858,17 +859,45 @@ async function main(): Promise<void> {
     (userId, msgs, blockId) => handleMessages(bot, openrouterKey, userId, msgs, blockId),
   );
 
-  bot.on("message", (msg) => {
-    if (!msg.text || !msg.from) return;
-    if (msg.text.startsWith("/")) return;
+  bot.on("message", async (msg) => {
+    if (!msg.from) return;
 
     const userId = String(msg.from.id);
     if (!isUserAllowed(userId)) {
-      const sender = msg.from.username || msg.from.first_name || "Unknown";
-      const { code } = upsertPairingRequest(sender, userId);
-      bot.sendMessage(msg.chat.id, buildPairingMessage(userId, code));
+      if (msg.text || msg.voice) {
+        const sender = msg.from.username || msg.from.first_name || "Unknown";
+        const { code } = upsertPairingRequest(sender, userId);
+        bot.sendMessage(msg.chat.id, buildPairingMessage(userId, code));
+      }
       return;
     }
+
+    // Voice messages: transcribe then feed into buffer
+    if (msg.voice) {
+      try {
+        const fileLink = await bot.getFileLink(msg.voice.file_id);
+        const res = await fetch(fileLink);
+        if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+        const audioBuf = Buffer.from(await res.arrayBuffer());
+
+        const text = await transcribeAudio(audioBuf, openrouterKey);
+        log("INFO", `Voice from ${userId}: "${text.slice(0, 100)}"`);
+
+        buffer.add(userId, {
+          text,
+          messageId: msg.message_id,
+          chatId: msg.chat.id,
+          date: msg.date ?? Math.floor(Date.now() / 1000),
+        });
+      } catch (err) {
+        log("ERROR", `Voice transcription failed for ${userId}: ${(err as Error).message}`);
+        await sendText(bot, msg.chat.id, "Couldn't understand that voice message. Try again or type it out?");
+      }
+      return;
+    }
+
+    if (!msg.text) return;
+    if (msg.text.startsWith("/")) return;
 
     buffer.add(userId, {
       text: msg.text,
