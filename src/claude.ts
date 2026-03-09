@@ -154,7 +154,7 @@ function buildSystemPrompt(logsDir: string, timezone: string): string {
     "  sleep/{yyyy}-{mm}.csv — one sleep CSV file per month",
     "  notes.csv — all user notes (timestamp,note)",
     "  weight.csv — weight tracking (timestamp,weight_kg,notes)",
-    "  chat-history.json — recent chat messages between user and bot (last 50)",
+    "  chat-history.json — recent chat messages between user and bot (last 100)",
     "",
     filesInfo,
     "",
@@ -189,6 +189,7 @@ function buildSystemPrompt(logsDir: string, timezone: string): string {
     "- For ANY web lookup, use the bash search command above — never try built-in web tools",
     "- Be concise and helpful",
     `- All times should be in the user's timezone (${timezone}) — never mention UTC to the user`,
+    "- Weeks start on Monday (ISO 8601). 'This week' = Monday–Sunday of current week, 'last week' = previous Monday–Sunday.",
   ].join("\n");
 }
 

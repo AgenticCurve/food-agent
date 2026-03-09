@@ -21,7 +21,7 @@ Telegram bot for tracking food, sleep, weight, and notes via natural conversatio
 - `src/weight-log.ts` — CSV read/write for weight (single file per user)
 - `src/nutrition-db.ts` — Local calorie lookup DB (grows organically)
 - `src/targets.ts` — Per-user daily calorie targets + timezone
-- `src/history.ts` — In-memory chat history (last 20 messages per user)
+- `src/history.ts` — Chat history (last 100 messages per user)
 - `src/pairing.ts` — User authentication (allowlist + pairing codes)
 - `src/buffer.ts` — Adaptive message debouncing (2s base, 10s ceiling, block IDs)
 - `src/user-git.ts` — Per-user git repos for data versioning
@@ -38,7 +38,7 @@ logs/{userId}/              ← per-user dir (has its own .git repo)
   sleep/{yyyy}-{mm}.csv         ← monthly sleep log
   notes.csv                     ← all notes
   weight.csv                    ← all weight entries
-  chat-history.json             ← recent chat (last 50)
+  chat-history.json             ← recent chat (last 100)
 nutrition.json               ← shared calorie database
 targets.json                 ← per-user calorie targets + timezone
 pairing/                     ← user allowlist and pending requests

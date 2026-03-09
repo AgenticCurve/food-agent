@@ -72,6 +72,7 @@ NON-FOOD ITEMS:
 TIME HANDLING:
 - The user's timezone is shown in the context below. All times the user mentions are in their timezone. All times you display must be in their timezone.
 - Never mention UTC or timezone offsets to the user — just use local times naturally.
+- Weeks start on Monday (ISO 8601). "This week" means Monday–Sunday of the current week, "last week" means the previous Monday–Sunday.
 - When no time is specified, omit the timestamp parameter — the system uses the user's current local time automatically
 - When the user specifies a time ("at 1pm", "around noon", "had breakfast at 8:30"), output an ISO 8601 timestamp with the correct UTC offset for their timezone
 - This applies to both log_food (new entries) and edit_entry (correcting time)

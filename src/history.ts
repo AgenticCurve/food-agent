@@ -5,7 +5,7 @@ import { getLogDirPath } from "./food-log.js";
 import type { ChatMessage } from "./types.js";
 
 const HISTORY_DIR = dataPath("history");
-const MAX_MESSAGES = 50;
+const MAX_MESSAGES = 100;
 
 function ensureDir(): void {
   if (!fs.existsSync(HISTORY_DIR)) {
