@@ -5,7 +5,7 @@
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const LITE_MODEL = "google/gemini-3.1-flash-lite-preview";
-const FLASH_MODEL = "google/gemini-3.1-flash-preview";
+const FLASH_MODEL = "google/gemini-3-flash-preview";
 
 function log(level: string, message: string): void {
   const ts = new Date().toISOString();
