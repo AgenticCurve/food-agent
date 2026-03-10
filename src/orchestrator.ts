@@ -9,7 +9,7 @@
 
 import fs from "fs";
 import path from "path";
-import type { FoodEntry, NutritionInfo, ChatMessage, SleepEntry, NoteEntry, WeightEntry } from "./types.js";
+import type { FoodEntry, NutritionInfo, ChatMessage, SleepEntry, NoteEntry, WeightEntry, NutritionLabelEntry } from "./types.js";
 import {
   getSleepEntriesForDateRange,
   grepSleepLogs,
@@ -25,6 +25,10 @@ import {
   getWeightsForDateRange,
   grepWeights,
 } from "./weight-log.js";
+import {
+  getAllNutritionLabels,
+  grepNutritionLabels,
+} from "./nutrition-labels.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3-flash-preview";
@@ -105,15 +109,16 @@ TOOLS — WHEN AND HOW TO USE:
 2. log_sleep — Log a sleep entry. Needs: type (night/nap), start_time, end_time, quality (1-10). Optional: notes.
 3. log_note — Save a note to the user's notes log. Use when they explicitly ask to save/record a note, reminder, or observation.
 4. log_weight — Record the user's weight in kg. Convert from lbs if needed (1 lb = 0.4536 kg). Optional notes.
-5. edit_entry — Edit any entry by number. Set log_type to "food", "sleep", "notes", or "weight". Set date (yyyy-mm-dd) for past food/sleep/notes entries, omit for today. For weight, date is not needed (single file, global entry numbers).
-6. remove_entry — Remove any entry by number. Same log_type and date params as edit_entry.
-7. search — Web search via Perplexity. Use for nutrition facts, calorie counts, health info, current prices, or anything you're unsure about. Results come back to you — synthesize them into a helpful response.
-8. get_entries — Retrieve CSV entries for a date range. Set log_type to "food", "sleep", "notes", or "weight". Results come back to you.
-9. grep_logs — Search all logs for a text pattern (case-insensitive). Set log_type to "food", "sleep", "notes", or "weight". Use for "when did I last eat X?" or "find notes about..." etc.
-10. ask_claude — Ask Claude for analysis or information. Use for complex questions about trends, patterns, comparisons, or anything requiring deep data analysis.
-11. tell_claude — Instruct Claude to perform an action. Claude has full bash access, file read/write, web search. Use for reports, multi-day analysis, computation, or anything you can't do yourself.
-12. set_target — Change the user's daily calorie target.
-13. set_timezone — Change the user's timezone.
+5. log_nutrition_label — Save a nutrition label to the user's database. Use when they share a label image or product info.
+6. edit_entry — Edit any entry by number. Set log_type to "food", "sleep", "notes", "weight", or "nutrition_labels". Set date (yyyy-mm-dd) for past food/sleep/notes entries, omit for today. For weight/nutrition_labels, date is not needed (single file, global entry numbers).
+7. remove_entry — Remove any entry by number. Same log_type and date params as edit_entry.
+8. search — Web search via Perplexity. Use for nutrition facts, calorie counts, health info, current prices, or anything you're unsure about. Results come back to you — synthesize them into a helpful response.
+9. get_entries — Retrieve CSV entries for a date range. Set log_type to "food", "sleep", "notes", or "weight". Results come back to you.
+10. grep_logs — Search all logs for a text pattern (case-insensitive). Set log_type to "food", "sleep", "notes", "weight", or "nutrition_labels". Use for "when did I last eat X?", "find notes about...", or "search nutrition labels for..." etc.
+11. ask_claude — Ask Claude for analysis or information. Use for complex questions about trends, patterns, comparisons, or anything requiring deep data analysis.
+12. tell_claude — Instruct Claude to perform an action. Claude has full bash access, file read/write, web search. Use for reports, multi-day analysis, computation, or anything you can't do yourself.
+13. set_target — Change the user's daily calorie target.
+14. set_timezone — Change the user's timezone.
 
 CHOOSING THE RIGHT TOOL:
 - Today's data is shown in context — answer simple questions directly, no tool needed.
@@ -130,6 +135,13 @@ NOTES:
 - For past notes: set the date param (yyyy-mm-dd)
 - Users can ask to delete notes — use remove_entry with log_type="notes" and the entry number
 - The context only shows the last 7 days of notes. Use get_entries or grep_logs with log_type="notes" for older notes.
+
+NUTRITION LABELS:
+- The user has a personal nutrition labels database (nutrition-labels.csv) — a single file that stores nutritional info from product labels, packages, etc.
+- When the user sends a nutrition label or product image, save it using log_nutrition_label with all extracted info (product name, brand, serving size, macros, etc.)
+- When logging food, check the "Saved nutrition labels" in context below to see if there's already a profile for that product — use its calorie/macro values instead of estimating
+- Use grep_logs with log_type="nutrition_labels" to search for a product by name or brand
+- Entry numbers are global (single file). Users can edit/remove labels via edit_entry/remove_entry with log_type="nutrition_labels"
 
 WEIGHT:
 - When the user reports their weight, use log_weight. Accept kg or lbs (convert lbs to kg).
@@ -311,6 +323,68 @@ const TOOLS = [
   {
     type: "function" as const,
     function: {
+      name: "log_nutrition_label",
+      description:
+        "Save a nutrition label to the user's database. Use when the user shares a nutrition label, product package, or asks to save nutritional info for a product.",
+      parameters: {
+        type: "object",
+        properties: {
+          product_name: {
+            type: "string",
+            description: "Product name (e.g. 'Protein Bar', 'Greek Yogurt')",
+          },
+          brand: {
+            type: "string",
+            description: "Brand name (e.g. 'Kind', 'Chobani'). Empty string if unknown.",
+          },
+          serving_size: {
+            type: "string",
+            description: "Serving size as shown on label (e.g. '40g', '1 cup (240ml)', '1 bar')",
+          },
+          calories: {
+            type: "number",
+            description: "Calories per serving",
+          },
+          protein_g: {
+            type: "number",
+            description: "Protein in grams per serving",
+          },
+          carbs_g: {
+            type: "number",
+            description: "Total carbohydrates in grams per serving",
+          },
+          fat_g: {
+            type: "number",
+            description: "Total fat in grams per serving",
+          },
+          sugar_g: {
+            type: "number",
+            description: "Sugar in grams per serving (0 if not shown)",
+          },
+          fiber_g: {
+            type: "number",
+            description: "Fiber in grams per serving (0 if not shown)",
+          },
+          sodium_mg: {
+            type: "number",
+            description: "Sodium in mg per serving (0 if not shown)",
+          },
+          notes: {
+            type: "string",
+            description: "Any extra info (e.g. 'sugar-free variant', 'family size pack')",
+          },
+          message: {
+            type: "string",
+            description: "Brief confirmation message for the user",
+          },
+        },
+        required: ["product_name", "serving_size", "calories", "protein_g", "carbs_g", "fat_g", "message"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
       name: "edit_entry",
       description:
         "Edit an existing entry by its number (#1, #2, etc.). Works for any date and both food and sleep logs. For past dates, use get_entries first to see the entries, then ALWAYS ask the user for explicit confirmation before editing. For food: use food_item, quantity, unit, calories, timestamp. For sleep: use sleep_type, start_time, end_time, quality, notes.",
@@ -319,7 +393,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep", "notes", "weight"],
+            enum: ["food", "sleep", "notes", "weight", "nutrition_labels"],
             description: "Which log to edit (default: food)",
           },
           date: {
@@ -394,7 +468,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep", "notes", "weight"],
+            enum: ["food", "sleep", "notes", "weight", "nutrition_labels"],
             description: "Which log to remove from (default: food)",
           },
           date: {
@@ -524,7 +598,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep", "notes", "weight"],
+            enum: ["food", "sleep", "notes", "weight", "nutrition_labels"],
             description: "Which log to query (default: food)",
           },
           start_date: {
@@ -551,7 +625,7 @@ const TOOLS = [
         properties: {
           log_type: {
             type: "string",
-            enum: ["food", "sleep", "notes", "weight"],
+            enum: ["food", "sleep", "notes", "weight", "nutrition_labels"],
             description: "Which log to search (default: food)",
           },
           pattern: {
@@ -595,8 +669,13 @@ export type OrchestratorResult =
   | { type: "log_note"; note: string; message: string }
   | { type: "log_weight"; weight_kg: number; notes?: string; message: string }
   | {
+      type: "log_nutrition_label";
+      entry: Omit<NutritionLabelEntry, "timestamp">;
+      message: string;
+    }
+  | {
       type: "edit_entry";
-      log_type: "food" | "sleep" | "notes" | "weight";
+      log_type: "food" | "sleep" | "notes" | "weight" | "nutrition_labels";
       date?: string;
       entry_number: number;
       updates: Record<string, unknown>;
@@ -604,7 +683,7 @@ export type OrchestratorResult =
     }
   | {
       type: "remove_entry";
-      log_type: "food" | "sleep" | "notes" | "weight";
+      log_type: "food" | "sleep" | "notes" | "weight" | "nutrition_labels";
       date?: string;
       entry_number: number;
       message: string;
@@ -829,6 +908,23 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     );
   }
 
+  // --- Saved nutrition labels ---
+  const labels = getAllNutritionLabels(ctx.userId);
+  if (labels.length > 0) {
+    const labelStr = labels
+      .map(
+        (l, i) =>
+          `  #${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""} — ${l.serving_size}: ${l.calories} cal, P${l.protein_g}g C${l.carbs_g}g F${l.fat_g}g`,
+      )
+      .join("\n");
+    parts.push(
+      "",
+      "=== SAVED NUTRITION LABELS ===",
+      labelStr,
+      "Use these exact values when the user logs a matching product.",
+    );
+  }
+
   if (knownFoodsStr) {
     parts.push("", "Known foods (use these calorie values):", knownFoodsStr);
   }
@@ -852,9 +948,10 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     "  Sleep: date,type,start_time,end_time,duration_hours,quality,notes",
     "  Notes: timestamp,note",
     "  Weight: timestamp,weight_kg,notes",
+    "  Nutrition labels: timestamp,product_name,brand,serving_size,calories,protein_g,carbs_g,fat_g,sugar_g,fiber_g,sodium_mg,notes",
     "Use get_entries(start_date, end_date, log_type) to read past data.",
     "Use grep_logs(pattern, log_type) to search across all data.",
-    "log_type options: food, sleep, notes, weight",
+    "log_type options: food, sleep, notes, weight, nutrition_labels",
   );
 
   return parts.filter((l) => l !== undefined).join("\n");
@@ -1076,6 +1173,9 @@ export async function processMessage(
           case "weight":
             result = grepWeights(context.userId, parsed.pattern as string);
             break;
+          case "nutrition_labels":
+            result = grepNutritionLabels(context.userId, parsed.pattern as string);
+            break;
           default:
             result = grepLogs(context.logsDir, parsed.pattern as string);
         }
@@ -1131,9 +1231,28 @@ export async function processMessage(
             message: (parsed.message as string) || "Weight recorded!",
           };
 
+        case "log_nutrition_label":
+          return {
+            type: "log_nutrition_label",
+            entry: {
+              product_name: parsed.product_name as string,
+              brand: (parsed.brand as string) || "",
+              serving_size: parsed.serving_size as string,
+              calories: parsed.calories as number,
+              protein_g: parsed.protein_g as number,
+              carbs_g: parsed.carbs_g as number,
+              fat_g: parsed.fat_g as number,
+              sugar_g: (parsed.sugar_g as number) || 0,
+              fiber_g: (parsed.fiber_g as number) || 0,
+              sodium_mg: (parsed.sodium_mg as number) || 0,
+              notes: (parsed.notes as string) || "",
+            },
+            message: (parsed.message as string) || "Nutrition label saved!",
+          };
+
         case "edit_entry": {
           const updates: Record<string, unknown> = {};
-          const logType = ((parsed.log_type as string) || "food") as "food" | "sleep" | "notes" | "weight";
+          const logType = ((parsed.log_type as string) || "food") as "food" | "sleep" | "notes" | "weight" | "nutrition_labels";
           if (logType === "sleep") {
             if (parsed.sleep_type !== undefined) updates.type = parsed.sleep_type;
             if (parsed.start_time !== undefined) updates.start_time = parsed.start_time;

@@ -39,6 +39,21 @@ export interface WeightEntry {
   notes: string;
 }
 
+export interface NutritionLabelEntry {
+  timestamp: string;
+  product_name: string;
+  brand: string;
+  serving_size: string;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  sugar_g: number;
+  fiber_g: number;
+  sodium_mg: number;
+  notes: string;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   text: string;

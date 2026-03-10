@@ -47,6 +47,7 @@ import {
 } from "./sleep-log.js";
 import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
+import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel } from "./nutrition-labels.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
 import { transcribeAudio, describeImage } from "./transcribe.js";
@@ -308,6 +309,17 @@ async function handleMessages(
       break;
     }
 
+    case "log_nutrition_label": {
+      appendNutritionLabel(userId, {
+        timestamp: nowTZ(target.timezone),
+        ...result.entry,
+      });
+      log("INFO", `Saved nutrition label for ${userId}: ${result.entry.product_name}`);
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
     case "edit_entry": {
       const editDate =
         result.date ||
@@ -340,6 +352,14 @@ async function handleMessages(
           await sendText(bot, chatId, result.message);
         } else {
           await sendText(bot, chatId, `Couldn't find weight entry #${result.entry_number}.`);
+        }
+      } else if (result.log_type === "nutrition_labels") {
+        const updated = updateNutritionLabel(userId, result.entry_number, result.updates as Record<string, unknown>);
+        if (updated) {
+          log("INFO", `Edited nutrition label #${result.entry_number} for ${userId}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(bot, chatId, `Couldn't find nutrition label #${result.entry_number}.`);
         }
       } else {
         const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
@@ -394,6 +414,14 @@ async function handleMessages(
           await sendText(bot, chatId, result.message);
         } else {
           await sendText(bot, chatId, `Couldn't find weight entry #${result.entry_number}.`);
+        }
+      } else if (result.log_type === "nutrition_labels") {
+        const removed = removeNutritionLabel(userId, result.entry_number);
+        if (removed) {
+          log("INFO", `Removed nutrition label #${result.entry_number} for ${userId}: ${removed.product_name}`);
+          await sendText(bot, chatId, result.message);
+        } else {
+          await sendText(bot, chatId, `Couldn't find nutrition label #${result.entry_number}.`);
         }
       } else {
         const removed = result.date
@@ -475,6 +503,10 @@ function buildCommitMessage(result: { type: string; [k: string]: unknown }): str
       return `log_note: ${(result.note as string).slice(0, 60)}`;
     case "log_weight":
       return `log_weight: ${result.weight_kg} kg`;
+    case "log_nutrition_label": {
+      const entry = result.entry as { product_name: string };
+      return `log_nutrition_label: ${entry.product_name}`;
+    }
     case "edit_entry":
       return `edit_entry: ${result.log_type} #${result.entry_number}`;
     case "remove_entry":

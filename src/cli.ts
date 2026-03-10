@@ -41,6 +41,7 @@ import {
 } from "./sleep-log.js";
 import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
+import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel } from "./nutrition-labels.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 
 // --- Helpers ---
@@ -208,6 +209,16 @@ async function processInput(
       break;
     }
 
+    case "log_nutrition_label": {
+      appendNutritionLabel(userId, {
+        timestamp: nowTZ(target.timezone),
+        ...result.entry,
+      });
+      print(result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
     case "edit_entry": {
       const editDate =
         result.date ||
@@ -225,6 +236,9 @@ async function processInput(
       } else if (result.log_type === "weight") {
         const updated = updateWeight(userId, result.entry_number, result.updates as { weight_kg?: number; notes?: string });
         print(updated ? result.message : `Couldn't find weight entry #${result.entry_number}.`);
+      } else if (result.log_type === "nutrition_labels") {
+        const updated = updateNutritionLabel(userId, result.entry_number, result.updates as Record<string, unknown>);
+        print(updated ? result.message : `Couldn't find nutrition label #${result.entry_number}.`);
       } else {
         const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
         const updated = result.date
@@ -263,6 +277,9 @@ async function processInput(
       } else if (result.log_type === "weight") {
         const removed = removeWeight(userId, result.entry_number);
         print(removed ? result.message : `Couldn't find weight entry #${result.entry_number}.`);
+      } else if (result.log_type === "nutrition_labels") {
+        const removed = removeNutritionLabel(userId, result.entry_number);
+        print(removed ? result.message : `Couldn't find nutrition label #${result.entry_number}.`);
       } else {
         const removed = result.date
           ? removeEntryByDate(userId, removeDate, result.entry_number)
