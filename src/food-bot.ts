@@ -369,28 +369,47 @@ async function handleMessages(
         "INFO",
         `Logged sleep for ${userId}: ${sleepEntry.type} ${durationHours}h quality=${sleepEntry.quality}/10`,
       );
-      await sendText(bot, chatId, result.message);
-      addMessage(userId, "assistant", result.message);
+      const bedTime = extractTime(sleepEntry.start_time);
+      const wakeTime = extractTime(sleepEntry.end_time);
+      const sleepConfirm = [
+        result.message,
+        "",
+        `  😴 ${sleepEntry.type === "night" ? "Night sleep" : "Nap"}: ${bedTime} → ${wakeTime}`,
+        `  ⏱ Duration: ${durationHours}h`,
+        `  ⭐ Quality: ${sleepEntry.quality}/10`,
+        sleepEntry.notes ? `  📝 ${sleepEntry.notes}` : "",
+      ].filter(Boolean).join("\n");
+      await sendText(bot, chatId, sleepConfirm);
+      addMessage(userId, "assistant", sleepConfirm);
       break;
     }
 
     case "log_note": {
-      appendNote(userId, { timestamp: nowTZ(target.timezone), note: result.note }, target.timezone);
+      const noteTs = nowTZ(target.timezone);
+      appendNote(userId, { timestamp: noteTs, note: result.note }, target.timezone);
       log("INFO", `Saved note for ${userId}: "${result.note.slice(0, 50)}"`);
-      await sendText(bot, chatId, result.message);
-      addMessage(userId, "assistant", result.message);
+      const noteConfirm = `${result.message}\n\n  📝 ${extractTime(noteTs)} — ${result.note}`;
+      await sendText(bot, chatId, noteConfirm);
+      addMessage(userId, "assistant", noteConfirm);
       break;
     }
 
     case "log_weight": {
+      const weightTs = nowTZ(target.timezone);
       appendWeight(userId, {
-        timestamp: nowTZ(target.timezone),
+        timestamp: weightTs,
         weight_kg: result.weight_kg,
         notes: result.notes || "",
       });
       log("INFO", `Logged weight for ${userId}: ${result.weight_kg} kg`);
-      await sendText(bot, chatId, result.message);
-      addMessage(userId, "assistant", result.message);
+      const weightConfirm = [
+        result.message,
+        "",
+        `  ⚖️ ${result.weight_kg} kg`,
+        result.notes ? `  📝 ${result.notes}` : "",
+      ].filter(Boolean).join("\n");
+      await sendText(bot, chatId, weightConfirm);
+      addMessage(userId, "assistant", weightConfirm);
       break;
     }
 
@@ -400,8 +419,20 @@ async function handleMessages(
         ...result.entry,
       });
       log("INFO", `Saved nutrition label for ${userId}: ${result.entry.product_name}`);
-      await sendText(bot, chatId, result.message);
-      addMessage(userId, "assistant", result.message);
+      const e = result.entry;
+      const labelConfirm = [
+        result.message,
+        "",
+        `  🏷 **${e.product_name}**${e.brand ? ` (${e.brand})` : ""}`,
+        `  Serving: ${e.serving_size} (${e.serving_size_g}g)`,
+        `  Per 100g: ${e.calories_per_100g} cal | P ${e.protein_per_100g}g · C ${e.carbs_per_100g}g · F ${e.fat_per_100g}g`,
+        (e.sugar_per_100g || e.fiber_per_100g || e.sodium_per_100g)
+          ? `  ${e.sugar_per_100g ? `Sugar ${e.sugar_per_100g}g` : ""} ${e.fiber_per_100g ? `Fiber ${e.fiber_per_100g}g` : ""} ${e.sodium_per_100g ? `Na ${e.sodium_per_100g}mg` : ""}`.trim()
+          : "",
+        e.notes ? `  📝 ${e.notes}` : "",
+      ].filter(Boolean).join("\n");
+      await sendText(bot, chatId, labelConfirm);
+      addMessage(userId, "assistant", labelConfirm);
       break;
     }
 
@@ -565,8 +596,9 @@ async function handleMessages(
     case "save_profile": {
       addProfileFact(userId, result.fact);
       log("INFO", `Saved profile fact for ${userId}: "${result.fact}"`);
-      await sendText(bot, chatId, result.message);
-      addMessage(userId, "assistant", result.message);
+      const profileConfirm = `${result.message}\n\n  👤 ${result.fact}`;
+      await sendText(bot, chatId, profileConfirm);
+      addMessage(userId, "assistant", profileConfirm);
       break;
     }
 
