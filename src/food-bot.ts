@@ -49,7 +49,7 @@ import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNote
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
-import { transcribeAudio } from "./transcribe.js";
+import { transcribeAudio, describeImage } from "./transcribe.js";
 
 // --- Logging ---
 
@@ -872,7 +872,7 @@ async function main(): Promise<void> {
 
     const userId = String(msg.from.id);
     if (!isUserAllowed(userId)) {
-      if (msg.text || msg.voice) {
+      if (msg.text || msg.voice || msg.photo) {
         const sender = msg.from.username || msg.from.first_name || "Unknown";
         const { code } = upsertPairingRequest(sender, userId);
         bot.sendMessage(msg.chat.id, buildPairingMessage(userId, code));
@@ -900,6 +900,38 @@ async function main(): Promise<void> {
       } catch (err) {
         log("ERROR", `Voice transcription failed for ${userId}: ${(err as Error).message}`);
         await sendText(bot, msg.chat.id, "Couldn't understand that voice message. Try again or type it out?");
+      }
+      return;
+    }
+
+    // Photos: describe then feed into buffer
+    if (msg.photo && msg.photo.length > 0) {
+      try {
+        // Telegram sends multiple sizes — pick the largest
+        const photo = msg.photo[msg.photo.length - 1];
+        const fileLink = await bot.getFileLink(photo.file_id);
+        const res = await fetch(fileLink);
+        if (!res.ok) throw new Error(`Download failed: ${res.status}`);
+        const imgBuf = Buffer.from(await res.arrayBuffer());
+
+        const description = await describeImage(imgBuf, openrouterKey);
+        log("INFO", `Photo from ${userId}: "${description.slice(0, 100)}"`);
+
+        // Combine image description with caption if present
+        const caption = msg.caption || "";
+        const text = caption
+          ? `[Image: ${description}]\n${caption}`
+          : `[Image: ${description}]`;
+
+        buffer.add(userId, {
+          text,
+          messageId: msg.message_id,
+          chatId: msg.chat.id,
+          date: msg.date ?? Math.floor(Date.now() / 1000),
+        });
+      } catch (err) {
+        log("ERROR", `Image description failed for ${userId}: ${(err as Error).message}`);
+        await sendText(bot, msg.chat.id, "Couldn't process that image. Try again or describe what's in it?");
       }
       return;
     }
