@@ -42,12 +42,13 @@ import { markdownToTelegramHtml } from "./format.js";
 import {
   appendSleepEntry,
   getTodaySleep,
+  getSleepForDays,
   updateSleepEntry,
   removeSleepEntry,
 } from "./sleep-log.js";
-import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
-import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
-import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel } from "./nutrition-labels.js";
+import { appendNote, getTodayNotes, getNotesForDays, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
+import { appendWeight, updateWeight, removeWeight, getAllWeights } from "./weight-log.js";
+import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
 import { transcribeAudio, describeImage } from "./transcribe.js";
@@ -74,7 +75,58 @@ const MIN_GAP_SINCE_ACTIVITY_MS = 20 * 60 * 1000;
 const lastCheckinTime = new Map<string, number>();
 const lastUserMessageTime = new Map<string, number>();
 
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const COMMAND_MODEL = "google/gemini-3-flash-preview";
+
 // --- Helpers ---
+
+/**
+ * Lightweight OpenRouter call for formatting slash command output.
+ * No tools — just formats data nicely for Telegram.
+ */
+async function formatWithLLM(
+  apiKey: string,
+  data: string,
+  command: string,
+  question: string,
+  timezone: string,
+): Promise<string> {
+  const now = new Date().toLocaleString("en-US", {
+    timeZone: timezone,
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  const systemPrompt = `You format data summaries for a Telegram chat. Be concise and use markdown (bold, bullet points). All times in ${timezone}. Current time: ${now}.
+If the user asked a question, answer it using ONLY the provided data. Do not make up information.`;
+
+  const userContent = question
+    ? `Command: ${command}\nData:\n${data}\n\nUser question: ${question}`
+    : `Command: ${command}\nData:\n${data}\n\nFormat this data as a clean, readable Telegram message.`;
+
+  const res = await fetch(OPENROUTER_URL, {
+    method: "POST",
+    signal: AbortSignal.timeout(15_000),
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: COMMAND_MODEL,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`OpenRouter ${res.status}`);
+
+  const json = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  return json.choices?.[0]?.message?.content?.trim() ?? "No data to show.";
+}
 
 async function sendText(
   bot: TelegramBot,
@@ -522,7 +574,7 @@ function buildCommitMessage(result: { type: string; [k: string]: unknown }): str
 
 // --- Commands ---
 
-function setupCommands(bot: TelegramBot): void {
+function setupCommands(bot: TelegramBot, openrouterKey: string): void {
   bot.onText(/\/start/, (msg) => {
     const userId = String(msg.from?.id);
     const chatId = msg.chat.id;
@@ -547,66 +599,149 @@ function setupCommands(bot: TelegramBot): void {
       "",
       "To edit: \"change #2 to 3 eggs\" or \"remove #1\"",
       "",
-      "**Commands:**",
+      "**Data commands** (add a question for specific queries):",
       "/today — Today's food log",
-      "/week — This week's summary",
+      "/week — This week's food summary",
+      "/sleep — Recent sleep data",
+      "/notes — This week's notes",
+      "/weight — Weight history",
+      "/nutrition — Saved nutrition profiles",
+      "",
+      "**Other commands:**",
       "/undo — Remove last entry",
       "/target <number> — Set daily calorie target",
       "/tz <timezone> — Set timezone (e.g. Asia/Kolkata)",
-      "/search <query> — Search the web (results saved to chat history)",
-      "/claude <question> — Ask Claude directly (with access to all your data)",
-      "/clear — Clear all memory (chat history + Claude session)",
+      "/search <query> — Search the web",
+      "/claude <question> — Ask Claude (deep analysis)",
+      "/clear — Clear all memory",
       "/help — Show this message",
     ].join("\n");
     sendText(bot, msg.chat.id, help);
   });
 
-  bot.onText(/\/today/, (msg) => {
+  // --- Data commands (all support optional question) ---
+
+  bot.onText(/\/today(?:\s+([\s\S]+))?/, async (msg, match) => {
     const userId = String(msg.from?.id);
     if (!isUserAllowed(userId)) return;
+    const question = match?.[1]?.trim() || "";
     const target = getTarget(userId);
     const entries = getTodayEntries(userId, target.timezone);
-    sendText(
-      bot,
-      msg.chat.id,
-      formatTodaySummary(entries, target.daily_calories, target.timezone),
-    );
+    const total = entries.reduce((s, e) => s + e.calories, 0);
+    const data = entries.length > 0
+      ? `Daily target: ${target.daily_calories} cal\nToday's total: ${total} cal (${Math.round((total / target.daily_calories) * 100)}%)\n\n` +
+        entries.map((e, i) => `#${i + 1} ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal${e.notes ? ` [${e.notes}]` : ""}`).join("\n")
+      : `No food logged today. Daily target: ${target.daily_calories} cal.`;
+    try {
+      const reply = await formatWithLLM(openrouterKey, data, "/today", question, target.timezone);
+      await sendText(bot, msg.chat.id, reply);
+    } catch {
+      await sendText(bot, msg.chat.id, data);
+    }
   });
 
-  bot.onText(/\/week/, (msg) => {
+  bot.onText(/\/week(?:\s+([\s\S]+))?/, async (msg, match) => {
     const userId = String(msg.from?.id);
     if (!isUserAllowed(userId)) return;
+    const question = match?.[1]?.trim() || "";
     const target = getTarget(userId);
-    const entries = getEntriesForDays(userId, 7);
+    const entries = getEntriesForDays(userId, 7, target.timezone);
     if (entries.length === 0) {
-      sendText(bot, msg.chat.id, "No entries in the last 7 days.");
+      await sendText(bot, msg.chat.id, "No food entries in the last 7 days.");
       return;
     }
-
-    const byDate = new Map<string, FoodEntry[]>();
-    for (const e of entries) {
-      const date = new Date(e.timestamp).toLocaleDateString("en-CA", {
-        timeZone: target.timezone,
-      });
-      const arr = byDate.get(date) ?? [];
-      arr.push(e);
-      byDate.set(date, arr);
+    const data = `Daily target: ${target.daily_calories} cal\n\n` +
+      entries.map((e) => `${e.timestamp.slice(0, 10)} ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`).join("\n");
+    try {
+      const reply = await formatWithLLM(openrouterKey, data, "/week", question, target.timezone);
+      await sendText(bot, msg.chat.id, reply);
+    } catch {
+      await sendText(bot, msg.chat.id, data);
     }
+  });
 
-    const lines: string[] = ["**This week:**", ""];
-    let weekTotal = 0;
-    for (const [date, dayEntries] of byDate) {
-      const dayTotal = dayEntries.reduce((s, e) => s + e.calories, 0);
-      weekTotal += dayTotal;
-      const pct = Math.round((dayTotal / target.daily_calories) * 100);
-      lines.push(`${date}: ${dayTotal} cal (${pct}%)`);
+  bot.onText(/\/sleep(?:\s+([\s\S]+))?/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const question = match?.[1]?.trim() || "";
+    const target = getTarget(userId);
+    const entries = getSleepForDays(userId, 7, target.timezone);
+    if (entries.length === 0) {
+      await sendText(bot, msg.chat.id, "No sleep data in the last 7 days.");
+      return;
     }
-    lines.push("");
-    lines.push(
-      `**Weekly total:** ${weekTotal} cal | **Daily avg:** ${Math.round(weekTotal / byDate.size)} cal`,
-    );
+    const data = entries.map((s) =>
+      `${s.date} ${s.type}: ${extractTime(s.start_time)} → ${extractTime(s.end_time)} (${s.duration_hours}h, quality ${s.quality}/10)${s.notes ? ` — ${s.notes}` : ""}`
+    ).join("\n");
+    try {
+      const reply = await formatWithLLM(openrouterKey, data, "/sleep", question, target.timezone);
+      await sendText(bot, msg.chat.id, reply);
+    } catch {
+      await sendText(bot, msg.chat.id, data);
+    }
+  });
 
-    sendText(bot, msg.chat.id, lines.join("\n"));
+  bot.onText(/\/notes(?:\s+([\s\S]+))?/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const question = match?.[1]?.trim() || "";
+    const target = getTarget(userId);
+    const entries = getNotesForDays(userId, 7, target.timezone);
+    if (entries.length === 0) {
+      await sendText(bot, msg.chat.id, "No notes in the last 7 days.");
+      return;
+    }
+    const data = entries.map((n) =>
+      `${n.timestamp.slice(0, 10)} ${extractTime(n.timestamp)} — ${n.note}`
+    ).join("\n");
+    try {
+      const reply = await formatWithLLM(openrouterKey, data, "/notes", question, target.timezone);
+      await sendText(bot, msg.chat.id, reply);
+    } catch {
+      await sendText(bot, msg.chat.id, data);
+    }
+  });
+
+  bot.onText(/\/weight(?:\s+([\s\S]+))?/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const question = match?.[1]?.trim() || "";
+    const target = getTarget(userId);
+    const entries = getAllWeights(userId);
+    if (entries.length === 0) {
+      await sendText(bot, msg.chat.id, "No weight data yet.");
+      return;
+    }
+    const data = entries.map((w) =>
+      `${w.timestamp.slice(0, 10)} — ${w.weight_kg} kg${w.notes ? ` (${w.notes})` : ""}`
+    ).join("\n");
+    try {
+      const reply = await formatWithLLM(openrouterKey, data, "/weight", question, target.timezone);
+      await sendText(bot, msg.chat.id, reply);
+    } catch {
+      await sendText(bot, msg.chat.id, data);
+    }
+  });
+
+  bot.onText(/\/nutrition(?:\s+([\s\S]+))?/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const question = match?.[1]?.trim() || "";
+    const target = getTarget(userId);
+    const entries = getAllNutritionLabels(userId);
+    if (entries.length === 0) {
+      await sendText(bot, msg.chat.id, "No nutrition profiles saved yet. Send a photo of a nutrition label to add one!");
+      return;
+    }
+    const data = entries.map((l, i) =>
+      `#${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""}\n  Serving: ${l.serving_size} (${l.serving_size_g}g)\n  Per 100g: ${l.calories_per_100g} cal, P${l.protein_per_100g}g C${l.carbs_per_100g}g F${l.fat_per_100g}g${l.sugar_per_100g ? ` Sugar${l.sugar_per_100g}g` : ""}${l.fiber_per_100g ? ` Fiber${l.fiber_per_100g}g` : ""}${l.sodium_per_100g ? ` Na${l.sodium_per_100g}mg` : ""}${l.notes ? `\n  Notes: ${l.notes}` : ""}`
+    ).join("\n\n");
+    try {
+      const reply = await formatWithLLM(openrouterKey, data, "/nutrition", question, target.timezone);
+      await sendText(bot, msg.chat.id, reply);
+    } catch {
+      await sendText(bot, msg.chat.id, data);
+    }
   });
 
   bot.onText(/\/undo/, (msg) => {
@@ -890,7 +1025,7 @@ async function main(): Promise<void> {
   const bot = new TelegramBot(token, { polling: true });
   log("INFO", "Food Agent started. Waiting for messages...");
 
-  setupCommands(bot);
+  setupCommands(bot, openrouterKey);
 
   const buffer = new MessageBuffer(
     DEBOUNCE_MS,

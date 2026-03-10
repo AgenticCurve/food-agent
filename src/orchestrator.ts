@@ -138,10 +138,12 @@ NOTES:
 
 NUTRITION LABELS:
 - The user has a personal nutrition labels database (nutrition-labels.csv) — a single file that stores nutritional info from product labels, packages, etc.
-- When the user sends a nutrition label or product image, save it using log_nutrition_label with all extracted info (product name, brand, serving size, macros, etc.)
-- When logging food, check the "Saved nutrition labels" in context below to see if there's already a profile for that product — use its calorie/macro values instead of estimating
-- Use grep_logs with log_type="nutrition_labels" to search for a product by name or brand
-- Entry numbers are global (single file). Users can edit/remove labels via edit_entry/remove_entry with log_type="nutrition_labels"
+- ALL values are stored NORMALIZED TO PER 100g (or per 100ml for liquids). When extracting from a label, always convert: (label_value / serving_weight_g) * 100.
+- When the user sends a nutrition label or product image, save it using log_nutrition_label with all extracted info normalized to per 100g.
+- When logging food from a saved label, calculate: (per_100g_value * quantity_in_grams) / 100.
+- When logging food, check the "Saved nutrition labels" in context below to see if there's already a profile for that product — use its values instead of estimating.
+- Use grep_logs with log_type="nutrition_labels" to search for a product by name or brand.
+- Entry numbers are global (single file). Users can edit/remove labels via edit_entry/remove_entry with log_type="nutrition_labels".
 
 WEIGHT:
 - When the user reports their weight, use log_weight. Accept kg or lbs (convert lbs to kg).
@@ -325,7 +327,7 @@ const TOOLS = [
     function: {
       name: "log_nutrition_label",
       description:
-        "Save a nutrition label to the user's database. Use when the user shares a nutrition label, product package, or asks to save nutritional info for a product.",
+        "Save a nutrition label to the user's database. IMPORTANT: All nutritional values MUST be normalized to per 100g (or per 100ml for liquids). If the label shows per-serving values, divide by the serving weight in grams and multiply by 100.",
       parameters: {
         type: "object",
         properties: {
@@ -339,35 +341,39 @@ const TOOLS = [
           },
           serving_size: {
             type: "string",
-            description: "Serving size as shown on label (e.g. '40g', '1 cup (240ml)', '1 bar')",
+            description: "Serving size as shown on label (e.g. '1 bar (40g)', '1 cup (240ml)')",
           },
-          calories: {
+          serving_size_g: {
             type: "number",
-            description: "Calories per serving",
+            description: "Serving size weight in grams (e.g. 40 for a 40g bar, 240 for 1 cup)",
           },
-          protein_g: {
+          calories_per_100g: {
             type: "number",
-            description: "Protein in grams per serving",
+            description: "Calories per 100g. Calculate: (label_calories / serving_g) * 100",
           },
-          carbs_g: {
+          protein_per_100g: {
             type: "number",
-            description: "Total carbohydrates in grams per serving",
+            description: "Protein (g) per 100g",
           },
-          fat_g: {
+          carbs_per_100g: {
             type: "number",
-            description: "Total fat in grams per serving",
+            description: "Total carbohydrates (g) per 100g",
           },
-          sugar_g: {
+          fat_per_100g: {
             type: "number",
-            description: "Sugar in grams per serving (0 if not shown)",
+            description: "Total fat (g) per 100g",
           },
-          fiber_g: {
+          sugar_per_100g: {
             type: "number",
-            description: "Fiber in grams per serving (0 if not shown)",
+            description: "Sugar (g) per 100g (0 if not shown)",
           },
-          sodium_mg: {
+          fiber_per_100g: {
             type: "number",
-            description: "Sodium in mg per serving (0 if not shown)",
+            description: "Fiber (g) per 100g (0 if not shown)",
+          },
+          sodium_per_100g: {
+            type: "number",
+            description: "Sodium (mg) per 100g (0 if not shown)",
           },
           notes: {
             type: "string",
@@ -378,7 +384,7 @@ const TOOLS = [
             description: "Brief confirmation message for the user",
           },
         },
-        required: ["product_name", "serving_size", "calories", "protein_g", "carbs_g", "fat_g", "message"],
+        required: ["product_name", "serving_size", "serving_size_g", "calories_per_100g", "protein_per_100g", "carbs_per_100g", "fat_per_100g", "message"],
       },
     },
   },
@@ -914,14 +920,14 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     const labelStr = labels
       .map(
         (l, i) =>
-          `  #${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""} — ${l.serving_size}: ${l.calories} cal, P${l.protein_g}g C${l.carbs_g}g F${l.fat_g}g`,
+          `  #${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""} — serving: ${l.serving_size} (${l.serving_size_g}g) | per 100g: ${l.calories_per_100g} cal, P${l.protein_per_100g}g C${l.carbs_per_100g}g F${l.fat_per_100g}g`,
       )
       .join("\n");
     parts.push(
       "",
-      "=== SAVED NUTRITION LABELS ===",
+      "=== SAVED NUTRITION LABELS (all values per 100g) ===",
       labelStr,
-      "Use these exact values when the user logs a matching product.",
+      "To calculate for a serving: (per_100g_value * serving_size_g) / 100",
     );
   }
 
@@ -948,7 +954,7 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     "  Sleep: date,type,start_time,end_time,duration_hours,quality,notes",
     "  Notes: timestamp,note",
     "  Weight: timestamp,weight_kg,notes",
-    "  Nutrition labels: timestamp,product_name,brand,serving_size,calories,protein_g,carbs_g,fat_g,sugar_g,fiber_g,sodium_mg,notes",
+    "  Nutrition labels: timestamp,product_name,brand,serving_size,serving_size_g,calories_per_100g,protein_per_100g,carbs_per_100g,fat_per_100g,sugar_per_100g,fiber_per_100g,sodium_per_100g,notes",
     "Use get_entries(start_date, end_date, log_type) to read past data.",
     "Use grep_logs(pattern, log_type) to search across all data.",
     "log_type options: food, sleep, notes, weight, nutrition_labels",
@@ -1238,13 +1244,14 @@ export async function processMessage(
               product_name: parsed.product_name as string,
               brand: (parsed.brand as string) || "",
               serving_size: parsed.serving_size as string,
-              calories: parsed.calories as number,
-              protein_g: parsed.protein_g as number,
-              carbs_g: parsed.carbs_g as number,
-              fat_g: parsed.fat_g as number,
-              sugar_g: (parsed.sugar_g as number) || 0,
-              fiber_g: (parsed.fiber_g as number) || 0,
-              sodium_mg: (parsed.sodium_mg as number) || 0,
+              serving_size_g: parsed.serving_size_g as number,
+              calories_per_100g: parsed.calories_per_100g as number,
+              protein_per_100g: parsed.protein_per_100g as number,
+              carbs_per_100g: parsed.carbs_per_100g as number,
+              fat_per_100g: parsed.fat_per_100g as number,
+              sugar_per_100g: (parsed.sugar_per_100g as number) || 0,
+              fiber_per_100g: (parsed.fiber_per_100g as number) || 0,
+              sodium_per_100g: (parsed.sodium_per_100g as number) || 0,
               notes: (parsed.notes as string) || "",
             },
             message: (parsed.message as string) || "Nutrition label saved!",

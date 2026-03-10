@@ -4,7 +4,7 @@ import { dataPath } from "./paths.js";
 import type { NutritionLabelEntry } from "./types.js";
 
 const LOGS_DIR = dataPath("logs");
-const CSV_HEADER = "timestamp,product_name,brand,serving_size,calories,protein_g,carbs_g,fat_g,sugar_g,fiber_g,sodium_mg,notes";
+const CSV_HEADER = "timestamp,product_name,brand,serving_size,serving_size_g,calories_per_100g,protein_per_100g,carbs_per_100g,fat_per_100g,sugar_per_100g,fiber_per_100g,sodium_per_100g,notes";
 
 function getFilePath(userId: string): string {
   return path.join(LOGS_DIR, userId, "nutrition-labels.csv");
@@ -53,13 +53,14 @@ function entryToLine(e: NutritionLabelEntry): string {
     escapeCSV(e.product_name),
     escapeCSV(e.brand),
     escapeCSV(e.serving_size),
-    String(e.calories),
-    String(e.protein_g),
-    String(e.carbs_g),
-    String(e.fat_g),
-    String(e.sugar_g),
-    String(e.fiber_g),
-    String(e.sodium_mg),
+    String(e.serving_size_g),
+    String(e.calories_per_100g),
+    String(e.protein_per_100g),
+    String(e.carbs_per_100g),
+    String(e.fat_per_100g),
+    String(e.sugar_per_100g),
+    String(e.fiber_per_100g),
+    String(e.sodium_per_100g),
     escapeCSV(e.notes),
   ].join(",");
 }
@@ -76,14 +77,15 @@ function readFile(userId: string): NutritionLabelEntry[] {
       product_name: f[1] || "",
       brand: f[2] || "",
       serving_size: f[3] || "",
-      calories: parseFloat(f[4]) || 0,
-      protein_g: parseFloat(f[5]) || 0,
-      carbs_g: parseFloat(f[6]) || 0,
-      fat_g: parseFloat(f[7]) || 0,
-      sugar_g: parseFloat(f[8]) || 0,
-      fiber_g: parseFloat(f[9]) || 0,
-      sodium_mg: parseFloat(f[10]) || 0,
-      notes: f[11] || "",
+      serving_size_g: parseFloat(f[4]) || 0,
+      calories_per_100g: parseFloat(f[5]) || 0,
+      protein_per_100g: parseFloat(f[6]) || 0,
+      carbs_per_100g: parseFloat(f[7]) || 0,
+      fat_per_100g: parseFloat(f[8]) || 0,
+      sugar_per_100g: parseFloat(f[9]) || 0,
+      fiber_per_100g: parseFloat(f[10]) || 0,
+      sodium_per_100g: parseFloat(f[11]) || 0,
+      notes: f[12] || "",
     };
   }).filter((e) => e.product_name);
 }
@@ -142,15 +144,14 @@ export function grepNutritionLabels(userId: string, pattern: string): string {
     ? results
         .slice(0, 30)
         .map(
-          (e, i) =>
-            `#${entries.indexOf(e) + 1} ${e.product_name}${e.brand ? ` (${e.brand})` : ""} — ${e.serving_size}: ${e.calories} cal, P${e.protein_g}g C${e.carbs_g}g F${e.fat_g}g`,
+          (e) =>
+            `#${entries.indexOf(e) + 1} ${e.product_name}${e.brand ? ` (${e.brand})` : ""} — serving: ${e.serving_size} (${e.serving_size_g}g) | per 100g: ${e.calories_per_100g} cal, P${e.protein_per_100g}g C${e.carbs_per_100g}g F${e.fat_per_100g}g`,
         )
         .join("\n") +
         (results.length > 30 ? `\n... and ${results.length - 30} more` : "")
     : `No nutrition labels matching "${pattern}".`;
 }
 
-/** Format all labels as CSV string for context/tools. */
 export function getNutritionLabelsCSV(userId: string): string {
   const entries = readFile(userId);
   if (entries.length === 0) return "";

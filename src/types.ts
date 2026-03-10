@@ -44,13 +44,14 @@ export interface NutritionLabelEntry {
   product_name: string;
   brand: string;
   serving_size: string;
-  calories: number;
-  protein_g: number;
-  carbs_g: number;
-  fat_g: number;
-  sugar_g: number;
-  fiber_g: number;
-  sodium_mg: number;
+  serving_size_g: number;
+  calories_per_100g: number;
+  protein_per_100g: number;
+  carbs_per_100g: number;
+  fat_per_100g: number;
+  sugar_per_100g: number;
+  fiber_per_100g: number;
+  sodium_per_100g: number;
   notes: string;
 }
 
