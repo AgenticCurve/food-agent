@@ -20,7 +20,18 @@ import {
   listApprovedUsers,
 } from "./pairing.js";
 import { MessageBuffer, type BufferedMessage } from "./buffer.js";
-import { processMessage, type OrchestratorContext } from "./orchestrator.js";
+import { processMessage, SYSTEM_PROMPT, type OrchestratorContext } from "./orchestrator.js";
+import {
+  getCurrentStep,
+  advanceStep,
+  startOnboarding,
+  restartOnboarding,
+  skipOnboarding,
+  getOnboardingState,
+  getOnboardingStatusText,
+  getCompletionMessage,
+  buildOnboardingSystemPrompt,
+} from "./onboarding.js";
 import { askAboutFoodData, clearSession } from "./claude.js";
 import {
   appendEntries,
@@ -260,9 +271,15 @@ async function handleMessages(
     todayNotes: getTodayNotes(userId, target.timezone),
   };
 
+  // Build system prompt — use onboarding prompt if active
+  const onboardingStep = getCurrentStep(userId);
+  const systemPrompt = onboardingStep
+    ? buildOnboardingSystemPrompt(onboardingStep, SYSTEM_PROMPT)
+    : undefined;
+
   let result;
   try {
-    result = await processMessage(combined, context, openrouterKey);
+    result = await processMessage(combined, context, openrouterKey, systemPrompt);
   } catch (err) {
     log("ERROR", `Orchestrator failed: ${(err as Error).message}`);
     await sendText(
@@ -557,6 +574,21 @@ async function handleMessages(
   if (commitMsg) {
     commitUserData(userId, `[${blockId}] ${commitMsg}`);
   }
+
+  // Onboarding step completion check
+  if (onboardingStep && onboardingStep.completionCheck(result.type)) {
+    const newState = advanceStep(userId);
+    if (newState.completedAt) {
+      // All steps done
+      await sendText(bot, chatId, getCompletionMessage());
+    } else {
+      // Send next step intro
+      const nextStep = getCurrentStep(userId);
+      if (nextStep) {
+        await sendText(bot, chatId, nextStep.introMessage);
+      }
+    }
+  }
 }
 
 function buildCommitMessage(result: { type: string; [k: string]: unknown }): string {
@@ -686,8 +718,46 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
       `🔍 /search *<query>* — search the web`,
       `🧠 /claude *<question>* — ask Claude for deep analysis`,
       "🧹 /clear — clear chat memory & start fresh",
+      "🎓 /onboarding — guided setup walkthrough",
     ].join("\n");
     sendText(bot, msg.chat.id, help);
+  });
+
+  // --- Onboarding ---
+
+  bot.onText(/\/onboarding(?:\s+([\s\S]+))?/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const arg = match?.[1]?.trim().toLowerCase() || "";
+
+    if (arg === "skip") {
+      skipOnboarding(userId);
+      await sendText(bot, msg.chat.id, "⏭ Onboarding skipped. You can use all features normally.\n\nType /onboarding restart anytime to redo it, or /help for a quick reference.");
+      return;
+    }
+
+    if (arg === "restart") {
+      restartOnboarding(userId);
+      const step = getCurrentStep(userId);
+      if (step) await sendText(bot, msg.chat.id, step.introMessage);
+      return;
+    }
+
+    if (arg === "status") {
+      await sendText(bot, msg.chat.id, getOnboardingStatusText(userId));
+      return;
+    }
+
+    // Start or resume
+    const state = getOnboardingState(userId);
+    if (!state || state.completedAt || state.skipped) {
+      // Start fresh
+      startOnboarding(userId);
+    }
+    const step = getCurrentStep(userId);
+    if (step) {
+      await sendText(bot, msg.chat.id, step.introMessage);
+    }
   });
 
   // --- Data commands (all support optional question) ---

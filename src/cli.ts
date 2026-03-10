@@ -15,7 +15,18 @@
 import "dotenv/config";
 import readline from "readline";
 import { resolveOpenRouterKey } from "./settings.js";
-import { processMessage, type OrchestratorContext } from "./orchestrator.js";
+import { processMessage, SYSTEM_PROMPT, type OrchestratorContext } from "./orchestrator.js";
+import {
+  getCurrentStep,
+  advanceStep,
+  startOnboarding,
+  restartOnboarding,
+  skipOnboarding,
+  getOnboardingState,
+  getOnboardingStatusText,
+  getCompletionMessage,
+  buildOnboardingSystemPrompt,
+} from "./onboarding.js";
 import { askAboutFoodData, clearSession } from "./claude.js";
 import {
   appendEntries,
@@ -121,9 +132,15 @@ async function processInput(
     todayNotes: getTodayNotes(userId, target.timezone),
   };
 
+  // Onboarding system prompt override
+  const onboardingStep = getCurrentStep(userId);
+  const systemPrompt = onboardingStep
+    ? buildOnboardingSystemPrompt(onboardingStep, SYSTEM_PROMPT)
+    : undefined;
+
   let result;
   try {
-    result = await processMessage(input, context, openrouterKey);
+    result = await processMessage(input, context, openrouterKey, systemPrompt);
   } catch (err) {
     print(`Error: ${(err as Error).message}`);
     return;
@@ -340,6 +357,17 @@ async function processInput(
       break;
     }
   }
+
+  // Onboarding step completion check
+  if (onboardingStep && onboardingStep.completionCheck(result.type)) {
+    const newState = advanceStep(userId);
+    if (newState.completedAt) {
+      print(getCompletionMessage());
+    } else {
+      const nextStep = getCurrentStep(userId);
+      if (nextStep) print(nextStep.introMessage);
+    }
+  }
 }
 
 // --- Command handlers ---
@@ -510,6 +538,29 @@ async function startRepl(
 
     if (input === "/undo") {
       handleUndo(userId);
+      rl.prompt();
+      return;
+    }
+
+    if (input.startsWith("/onboarding")) {
+      const arg = input.replace("/onboarding", "").trim().toLowerCase();
+      if (arg === "skip") {
+        skipOnboarding(userId);
+        print("Onboarding skipped. Use /help for a quick reference.");
+      } else if (arg === "restart") {
+        restartOnboarding(userId);
+        const step = getCurrentStep(userId);
+        if (step) print(step.introMessage);
+      } else if (arg === "status") {
+        print(getOnboardingStatusText(userId));
+      } else {
+        const state = getOnboardingState(userId);
+        if (!state || state.completedAt || state.skipped) {
+          startOnboarding(userId);
+        }
+        const step = getCurrentStep(userId);
+        if (step) print(step.introMessage);
+      }
       rl.prompt();
       return;
     }

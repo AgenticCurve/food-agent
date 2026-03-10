@@ -42,7 +42,7 @@ function log(level: string, message: string): void {
 
 // --- System prompt ---
 
-const SYSTEM_PROMPT = `You are a friendly food tracking assistant on Telegram. You help users log what they eat, track calories, and meet daily goals.
+export const SYSTEM_PROMPT = `You are a friendly food tracking assistant on Telegram. You help users log what they eat, track calories, and meet daily goals.
 
 Your style:
 - Warm, brief, conversational (this is chat, not email)
@@ -1150,6 +1150,7 @@ export async function processMessage(
   userMessage: string,
   context: OrchestratorContext,
   apiKey: string,
+  systemPromptOverride?: string,
 ): Promise<OrchestratorResult> {
   const contextBlock = buildContextBlock(context);
   const fullUserContent = `--- Context ---\n${contextBlock}\n\n--- New message ---\n${userMessage}`;
@@ -1161,7 +1162,7 @@ export async function processMessage(
 
   // Build message array for multi-turn tool calling
   const messages: Array<Record<string, unknown>> = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPromptOverride || SYSTEM_PROMPT },
     { role: "user", content: fullUserContent },
   ];
 
