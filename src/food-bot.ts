@@ -1211,6 +1211,26 @@ async function main(): Promise<void> {
       return;
     }
 
+    // First message after pairing — offer onboarding
+    if (!getOnboardingState(userId)) {
+      ensureUserRepo(userId);
+      const welcome = [
+        "🎉 **Welcome aboard!** You're all set to use Food Agent.",
+        "",
+        "I'd recommend starting with a quick guided tour — it only takes a few minutes and will help you get the most out of the bot.",
+        "",
+        "🎓 /onboarding — start the guided setup (10 quick steps)",
+        "⏭ /onboarding skip — skip and jump straight in",
+        "",
+        "You can restart onboarding anytime with `/onboarding restart`.",
+      ].join("\n");
+      startOnboarding(userId);
+      const step = getCurrentStep(userId);
+      await sendText(bot, msg.chat.id, welcome);
+      if (step) await sendText(bot, msg.chat.id, step.introMessage);
+      return;
+    }
+
     // Voice messages: transcribe then feed into buffer
     if (msg.voice) {
       try {
