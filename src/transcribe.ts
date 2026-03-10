@@ -5,7 +5,7 @@
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const LITE_MODEL = "google/gemini-3.1-flash-lite-preview";
-const FLASH_MODEL = "google/gemini-3-flash-preview";
+const IMAGE_MODEL = "anthropic/claude-haiku-4.5";
 
 function log(level: string, message: string): void {
   const ts = new Date().toISOString();
@@ -106,7 +106,7 @@ export async function describeImage(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      model: FLASH_MODEL,
+      model: IMAGE_MODEL,
       messages: [
         {
           role: "user",

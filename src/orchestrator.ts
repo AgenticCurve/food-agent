@@ -27,7 +27,7 @@ import {
 } from "./weight-log.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3.1-flash-lite-preview";
+const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3-flash-preview";
 const MAX_TOOL_ROUNDS = 10;
 
 function log(level: string, message: string): void {
