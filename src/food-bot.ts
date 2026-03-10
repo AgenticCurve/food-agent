@@ -49,6 +49,7 @@ import {
 import { appendNote, getTodayNotes, getNotesForDays, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight, getAllWeights } from "./weight-log.js";
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
+import { addProfileFact, removeProfileFact, getProfile } from "./profile.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
 import { transcribeAudio, describeImage } from "./transcribe.js";
@@ -526,6 +527,24 @@ async function handleMessages(
       break;
     }
 
+    case "save_profile": {
+      addProfileFact(userId, result.fact);
+      log("INFO", `Saved profile fact for ${userId}: "${result.fact}"`);
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "remove_profile_fact": {
+      const removed = removeProfileFact(userId, result.fact_number);
+      if (removed) {
+        log("INFO", `Removed profile fact #${result.fact_number} for ${userId}: "${removed}"`);
+      }
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
     case "message": {
       await sendText(bot, chatId, result.text);
       addMessage(userId, "assistant", result.text);
@@ -567,6 +586,10 @@ function buildCommitMessage(result: { type: string; [k: string]: unknown }): str
       return `set_target: ${result.daily_calories} cal`;
     case "set_timezone":
       return `set_timezone: ${result.timezone}`;
+    case "save_profile":
+      return `save_profile: ${(result.fact as string).slice(0, 60)}`;
+    case "remove_profile_fact":
+      return `remove_profile_fact: #${result.fact_number}`;
     default:
       return "";
   }
@@ -592,29 +615,38 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
   bot.onText(/\/help/, (msg) => {
     if (!isUserAllowed(String(msg.from?.id))) return;
     const help = [
-      "**Food Agent**",
+      "**Food Agent** — your personal health tracker",
       "",
-      "Just tell me what you ate in plain language!",
-      'e.g. "had 2 eggs and toast" or "chicken rice for lunch at 1pm"',
+      "**Tracking** (just chat naturally):",
+      '• Food: "had 2 eggs and toast", "chicken rice at 1pm"',
+      '• Sleep: "slept 11pm to 7am, quality 8"',
+      '• Weight: "weigh 72kg today"',
+      '• Notes: "note: started new vitamin D"',
+      '• Nutrition labels: send a photo of a label',
+      '• Profile: "remember I\'m vegetarian", "I\'m allergic to peanuts"',
       "",
-      "To edit: \"change #2 to 3 eggs\" or \"remove #1\"",
+      "**Editing:** \"change #2 to 3 eggs\" or \"remove #1\"",
       "",
-      "**Data commands** (add a question for specific queries):",
+      '**Images:** Send food photos, nutrition labels, or product packages',
+      '**Voice:** Send voice messages — they\'re transcribed automatically',
+      "",
+      "**Data commands** (add a question, e.g. /today how much protein?):",
       "/today — Today's food log",
       "/week — This week's food summary",
       "/sleep — Recent sleep data",
       "/notes — This week's notes",
       "/weight — Weight history",
       "/nutrition — Saved nutrition profiles",
+      "/profile — Your saved preferences & restrictions",
       "",
-      "**Other commands:**",
-      "/undo — Remove last entry",
+      "**Settings & tools:**",
       "/target <number> — Set daily calorie target",
-      "/tz <timezone> — Set timezone (e.g. Asia/Kolkata)",
-      "/search <query> — Search the web",
-      "/claude <question> — Ask Claude (deep analysis)",
-      "/clear — Clear all memory",
-      "/help — Show this message",
+      "/tz <timezone> — Set timezone",
+      "/undo — Remove last entry",
+      "/search <query> — Web search",
+      "/claude <question> — Deep analysis with Claude",
+      "/clear — Clear chat memory",
+      "/help — This message",
     ].join("\n");
     sendText(bot, msg.chat.id, help);
   });
@@ -741,6 +773,29 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
       await sendText(bot, msg.chat.id, reply);
     } catch {
       await sendText(bot, msg.chat.id, data);
+    }
+  });
+
+  bot.onText(/\/profile(?:\s+([\s\S]+))?/, async (msg, match) => {
+    const userId = String(msg.from?.id);
+    if (!isUserAllowed(userId)) return;
+    const question = match?.[1]?.trim() || "";
+    const target = getTarget(userId);
+    const facts = getProfile(userId);
+    if (facts.length === 0) {
+      await sendText(bot, msg.chat.id, "No profile info saved yet. Tell me things like \"remember I'm vegetarian\" or \"I'm allergic to peanuts\" and I'll keep them in mind.");
+      return;
+    }
+    const data = facts.map((f, i) => `#${i + 1} ${f}`).join("\n");
+    if (question) {
+      try {
+        const reply = await formatWithLLM(openrouterKey, data, "/profile", question, target.timezone);
+        await sendText(bot, msg.chat.id, reply);
+      } catch {
+        await sendText(bot, msg.chat.id, data);
+      }
+    } else {
+      await sendText(bot, msg.chat.id, `**Your profile:**\n\n${data}\n\nSay "remember ..." to add or "forget #N" to remove.`);
     }
   });
 

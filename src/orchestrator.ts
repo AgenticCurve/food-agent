@@ -29,6 +29,7 @@ import {
   getAllNutritionLabels,
   grepNutritionLabels,
 } from "./nutrition-labels.js";
+import { getProfileText } from "./profile.js";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const MODEL = process.env.ORCHESTRATOR_MODEL || "google/gemini-3-flash-preview";
@@ -119,6 +120,8 @@ TOOLS — WHEN AND HOW TO USE:
 12. tell_claude — Instruct Claude to perform an action. Claude has full bash access, file read/write, web search. Use for reports, multi-day analysis, computation, or anything you can't do yourself.
 13. set_target — Change the user's daily calorie target.
 14. set_timezone — Change the user's timezone.
+15. save_profile — Save a persistent fact about the user (diet, allergies, preferences). Use when they say "remember that...", "I'm allergic to...", etc.
+16. remove_profile_fact — Remove a fact from the user's profile by number. Use when they say "forget that...", "I'm no longer...", etc.
 
 CHOOSING THE RIGHT TOOL:
 - Today's data is shown in context — answer simple questions directly, no tool needed.
@@ -172,7 +175,14 @@ CHECK-INS:
 - If they're behind on calories, encourage eating; if on track, acknowledge it
 - Sometimes just ask how their day is going — don't always lead with food
 - If it's meal time and they haven't logged, gently note it
-- When you see [SLEEP-CHECK-IN], ask about last night's sleep — when they went to bed, when they woke up, and how they'd rate it. Keep it casual: "Morning! How'd you sleep?" not "SLEEP CHECK-IN: Please log your sleep data"`;
+- When you see [SLEEP-CHECK-IN], ask about last night's sleep — when they went to bed, when they woke up, and how they'd rate it. Keep it casual: "Morning! How'd you sleep?" not "SLEEP CHECK-IN: Please log your sleep data"
+
+USER PROFILE:
+- The user may have a personal profile with persistent facts (dietary restrictions, allergies, preferences, health conditions, etc.)
+- These facts are ALWAYS relevant — factor them into every response (e.g. don't suggest non-veg if they're vegetarian, warn about allergens, etc.)
+- When the user says "remember that I'm ...", "I'm allergic to ...", "I'm vegetarian", etc. — save it with save_profile
+- When they say "forget that ...", "I'm no longer ...", "remove the ... thing" — remove it with remove_profile_fact
+- The profile is shown in context below under "USER PROFILE". Use it to personalize every interaction.`;
 
 // --- Tools ---
 
@@ -644,6 +654,50 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "save_profile",
+      description:
+        "Save a persistent fact about the user (dietary restriction, allergy, preference, health condition, etc.). These facts are included in every conversation. Use when the user says 'remember that...', 'I'm allergic to...', 'I'm vegetarian', etc.",
+      parameters: {
+        type: "object",
+        properties: {
+          fact: {
+            type: "string",
+            description: "The fact to save (e.g. 'Vegetarian', 'Allergic to peanuts', 'Lactose intolerant')",
+          },
+          message: {
+            type: "string",
+            description: "Confirmation message to show the user",
+          },
+        },
+        required: ["fact", "message"],
+      },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "remove_profile_fact",
+      description:
+        "Remove a fact from the user's profile by its number. Use when the user says 'forget that...', 'I'm no longer...', 'remove the ... from my profile'.",
+      parameters: {
+        type: "object",
+        properties: {
+          fact_number: {
+            type: "number",
+            description: "The number of the fact to remove (from the USER PROFILE section in context)",
+          },
+          message: {
+            type: "string",
+            description: "Confirmation message to show the user",
+          },
+        },
+        required: ["fact_number", "message"],
+      },
+    },
+  },
 ];
 
 // --- Types ---
@@ -698,6 +752,8 @@ export type OrchestratorResult =
   | { type: "tell_claude"; instruction: string }
   | { type: "set_target"; daily_calories: number; message: string }
   | { type: "set_timezone"; timezone: string; message: string }
+  | { type: "save_profile"; fact: string; message: string }
+  | { type: "remove_profile_fact"; fact_number: number; message: string }
   | { type: "message"; text: string };
 
 interface ToolCall {
@@ -858,6 +914,9 @@ function buildContextBlock(ctx: OrchestratorContext): string {
   // --- Directory tree ---
   const dirTree = buildDirTree(ctx.logsDir);
 
+  // --- User profile ---
+  const profileText = getProfileText(ctx.userId);
+
   // --- Assemble ---
   const parts = [
     `Today's date: ${todayDate}`,
@@ -865,6 +924,18 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     `Daily target: ${ctx.dailyTarget} cal`,
     `Today's intake: ${ctx.todayCalories} cal (${pct}%)`,
     lastFoodAgo,
+  ];
+
+  if (profileText) {
+    parts.push(
+      "",
+      "=== USER PROFILE ===",
+      profileText.split("\n").map((l, i) => `  #${i + 1}  ${l}`).join("\n"),
+      "(These are persistent facts about the user — always consider them.)",
+    );
+  }
+
+  parts.push(
     "",
     "=== TODAY'S FOOD LOG ===",
     todayLogStr,
@@ -876,7 +947,7 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     ctx.todayNotes.length > 0
       ? ctx.todayNotes.map((n, i) => `  #${i + 1}  ${n.note}`).join("\n")
       : "  (no notes today)",
-  ];
+  );
 
   // Raw CSV data for precise reference
   if (todayFoodCsv) {
@@ -1322,6 +1393,20 @@ export async function processMessage(
             type: "set_timezone",
             timezone: parsed.timezone as string,
             message: (parsed.message as string) || "Timezone updated!",
+          };
+
+        case "save_profile":
+          return {
+            type: "save_profile",
+            fact: parsed.fact as string,
+            message: (parsed.message as string) || "Saved to your profile!",
+          };
+
+        case "remove_profile_fact":
+          return {
+            type: "remove_profile_fact",
+            fact_number: parsed.fact_number as number,
+            message: (parsed.message as string) || "Removed from your profile!",
           };
       }
     }

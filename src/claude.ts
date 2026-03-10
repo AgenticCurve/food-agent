@@ -5,6 +5,7 @@ import path from "path";
 import { dataPath } from "./paths.js";
 import { PROJECT_ROOT } from "./paths.js";
 import { nowTZ } from "./food-log.js";
+import { getProfileText } from "./profile.js";
 
 const SESSIONS_DIR = dataPath("sessions");
 
@@ -128,7 +129,7 @@ function listCsvFilesRecursive(dir: string): string[] {
   return results.sort();
 }
 
-function buildSystemPrompt(logsDir: string, timezone: string): string {
+function buildSystemPrompt(logsDir: string, timezone: string, userId?: string): string {
   const files = listCsvFilesRecursive(logsDir);
   const localNow = nowTZ(timezone);
   const todayDate = localNow.split("T")[0];
@@ -184,6 +185,12 @@ function buildSystemPrompt(logsDir: string, timezone: string): string {
     "- Food-related questions the data can't answer",
     "- Any factual question you're not 100% certain about",
     "",
+    userId ? (() => {
+      const profile = getProfileText(userId);
+      return profile
+        ? `USER PROFILE (persistent facts — always consider these):\n${profile}\n`
+        : "";
+    })() : "",
     "INSTRUCTIONS:",
     "- Read CSV files as needed using your file tools",
     "- For ANY web lookup, use the bash search command above — never try built-in web tools",
@@ -207,7 +214,7 @@ export async function askAboutFoodData(
 
   log("DEBUG", `askAboutFoodData: userId=${userId}, session=${sessionId}`);
 
-  const systemPrompt = buildSystemPrompt(logsDir, timezone || "Asia/Hong_Kong");
+  const systemPrompt = buildSystemPrompt(logsDir, timezone || "Asia/Hong_Kong", userId);
   const fullPrompt = `${systemPrompt}\n\n---\n\n${question}`;
 
   if (isSessionInitialized(userId)) {

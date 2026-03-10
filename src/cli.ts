@@ -42,6 +42,7 @@ import {
 import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel } from "./nutrition-labels.js";
+import { addProfileFact, removeProfileFact } from "./profile.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 
 // --- Helpers ---
@@ -314,6 +315,20 @@ async function processInput(
 
     case "set_timezone": {
       setTarget(userId, { timezone: result.timezone });
+      print(result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "save_profile": {
+      addProfileFact(userId, result.fact);
+      print(result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "remove_profile_fact": {
+      removeProfileFact(userId, result.fact_number);
       print(result.message);
       addMessage(userId, "assistant", result.message);
       break;
