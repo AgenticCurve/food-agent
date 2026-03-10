@@ -140,6 +140,18 @@ If the user asked a question, answer it using ONLY the provided data. Do not mak
   return json.choices?.[0]?.message?.content?.trim() ?? "No data to show.";
 }
 
+/**
+ * Send "typing..." indicator on a loop until stop() is called.
+ * Telegram's sendChatAction expires after 5s, so we resend every 4s.
+ */
+function startTyping(bot: TelegramBot, chatId: number): { stop: () => void } {
+  bot.sendChatAction(chatId, "typing").catch(() => {});
+  const interval = setInterval(() => {
+    bot.sendChatAction(chatId, "typing").catch(() => {});
+  }, 4000);
+  return { stop: () => clearInterval(interval) };
+}
+
 async function sendText(
   bot: TelegramBot,
   chatId: number,
@@ -277,10 +289,12 @@ async function handleMessages(
     ? buildOnboardingSystemPrompt(onboardingStep, SYSTEM_PROMPT)
     : undefined;
 
+  const typing = startTyping(bot, chatId);
   let result;
   try {
     result = await processMessage(combined, context, openrouterKey, systemPrompt);
   } catch (err) {
+    typing.stop();
     log("ERROR", `Orchestrator failed: ${(err as Error).message}`);
     await sendText(
       bot,
@@ -289,6 +303,7 @@ async function handleMessages(
     );
     return;
   }
+  typing.stop();
 
   switch (result.type) {
     case "log_food": {
@@ -512,12 +527,15 @@ async function handleMessages(
     case "tell_claude": {
       const prompt = result.type === "ask_claude" ? result.question : result.instruction;
       await sendText(bot, chatId, "Let me look into that...");
+      const claudeTyping = startTyping(bot, chatId);
       try {
         const logsDir = getLogDirPath(userId);
         const answer = await askAboutFoodData(userId, logsDir, prompt, target.timezone);
+        claudeTyping.stop();
         await sendText(bot, chatId, answer);
         addMessage(userId, "assistant", `[claude]\n${answer}`);
       } catch (err) {
+        claudeTyping.stop();
         log("ERROR", `Claude failed: ${(err as Error).message}`);
         await sendText(
           bot,
@@ -1233,6 +1251,7 @@ async function main(): Promise<void> {
 
     // Voice messages: transcribe then feed into buffer
     if (msg.voice) {
+      const voiceTyping = startTyping(bot, msg.chat.id);
       try {
         const fileLink = await bot.getFileLink(msg.voice.file_id);
         const res = await fetch(fileLink);
@@ -1252,11 +1271,13 @@ async function main(): Promise<void> {
         log("ERROR", `Voice transcription failed for ${userId}: ${(err as Error).message}`);
         await sendText(bot, msg.chat.id, "Couldn't understand that voice message. Try again or type it out?");
       }
+      voiceTyping.stop();
       return;
     }
 
     // Photos: describe then feed into buffer
     if (msg.photo && msg.photo.length > 0) {
+      const photoTyping = startTyping(bot, msg.chat.id);
       try {
         // Telegram sends multiple sizes — pick the largest
         const photo = msg.photo[msg.photo.length - 1];
@@ -1284,6 +1305,7 @@ async function main(): Promise<void> {
         log("ERROR", `Image description failed for ${userId}: ${(err as Error).message}`);
         await sendText(bot, msg.chat.id, "Couldn't process that image. Try again or describe what's in it?");
       }
+      photoTyping.stop();
       return;
     }
 
