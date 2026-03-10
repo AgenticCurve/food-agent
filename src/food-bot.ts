@@ -45,7 +45,7 @@ import {
   updateSleepEntry,
   removeSleepEntry,
 } from "./sleep-log.js";
-import { appendNote, updateNote, removeNote } from "./notes-log.js";
+import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
@@ -203,6 +203,7 @@ async function handleMessages(
     logsDir: getLogDirPath(userId),
     userId,
     todaySleep: getTodaySleep(userId, target.timezone),
+    todayNotes: getTodayNotes(userId, target.timezone),
   };
 
   let result;
@@ -288,7 +289,7 @@ async function handleMessages(
     }
 
     case "log_note": {
-      appendNote(userId, { timestamp: nowTZ(target.timezone), note: result.note });
+      appendNote(userId, { timestamp: nowTZ(target.timezone), note: result.note }, target.timezone);
       log("INFO", `Saved note for ${userId}: "${result.note.slice(0, 50)}"`);
       await sendText(bot, chatId, result.message);
       addMessage(userId, "assistant", result.message);
@@ -322,12 +323,15 @@ async function handleMessages(
           await sendText(bot, chatId, `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`);
         }
       } else if (result.log_type === "notes") {
-        const updated = updateNote(userId, result.entry_number, result.updates as { note?: string });
+        const noteUpdates = result.updates as { note?: string };
+        const updated = result.date
+          ? updateNoteByDate(userId, editDate, result.entry_number, noteUpdates)
+          : updateTodayNote(userId, result.entry_number, noteUpdates, target.timezone);
         if (updated) {
-          log("INFO", `Edited note #${result.entry_number} for ${userId}`);
+          log("INFO", `Edited note #${result.entry_number} (${editDate}) for ${userId}`);
           await sendText(bot, chatId, result.message);
         } else {
-          await sendText(bot, chatId, `Couldn't find note #${result.entry_number}.`);
+          await sendText(bot, chatId, `Couldn't find note #${result.entry_number} on ${editDate}.`);
         }
       } else if (result.log_type === "weight") {
         const updated = updateWeight(userId, result.entry_number, result.updates as { weight_kg?: number; notes?: string });
@@ -374,12 +378,14 @@ async function handleMessages(
           await sendText(bot, chatId, `Couldn't find sleep entry #${result.entry_number} on ${removeDate}.`);
         }
       } else if (result.log_type === "notes") {
-        const removed = removeNote(userId, result.entry_number);
+        const removed = result.date
+          ? removeNoteByDate(userId, removeDate, result.entry_number)
+          : removeTodayNote(userId, result.entry_number, target.timezone);
         if (removed) {
-          log("INFO", `Removed note #${result.entry_number} for ${userId}`);
+          log("INFO", `Removed note #${result.entry_number} (${removeDate}) for ${userId}`);
           await sendText(bot, chatId, result.message);
         } else {
-          await sendText(bot, chatId, `Couldn't find note #${result.entry_number}.`);
+          await sendText(bot, chatId, `Couldn't find note #${result.entry_number} on ${removeDate}.`);
         }
       } else if (result.log_type === "weight") {
         const removed = removeWeight(userId, result.entry_number);
@@ -729,6 +735,7 @@ function startCheckins(bot: TelegramBot, openrouterKey: string): void {
           logsDir: getLogDirPath(userId),
           userId,
           todaySleep: getTodaySleep(userId, target.timezone),
+          todayNotes: getTodayNotes(userId, target.timezone),
         };
 
         const result = await processMessage(
@@ -812,6 +819,7 @@ function startSleepCheckins(bot: TelegramBot, openrouterKey: string): void {
           logsDir: getLogDirPath(userId),
           userId,
           todaySleep: todaySleepEntries,
+          todayNotes: getTodayNotes(userId, target.timezone),
         };
 
         const result = await processMessage(

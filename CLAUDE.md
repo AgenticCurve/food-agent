@@ -17,7 +17,7 @@ Telegram bot for tracking food, sleep, weight, and notes via natural conversatio
 - `src/claude.ts` — Claude CLI wrapper for deep analysis and web search
 - `src/food-log.ts` — CSV read/write for food entries (one file per day)
 - `src/sleep-log.ts` — CSV read/write for sleep entries (one file per month)
-- `src/notes-log.ts` — CSV read/write for notes (single file per user)
+- `src/notes-log.ts` — CSV read/write for notes (one file per day)
 - `src/weight-log.ts` — CSV read/write for weight (single file per user)
 - `src/nutrition-db.ts` — Local calorie lookup DB (grows organically)
 - `src/targets.ts` — Per-user daily calorie targets + timezone
@@ -34,11 +34,11 @@ Telegram bot for tracking food, sleep, weight, and notes via natural conversatio
 ## Data layout (in `.food-agent/`)
 ```
 logs/{userId}/              ← per-user dir (has its own .git repo)
-  {yyyy}/{mm}/{yyyy-mm-dd}.csv  ← daily food log
-  sleep/{yyyy}-{mm}.csv         ← monthly sleep log
-  notes.csv                     ← all notes
-  weight.csv                    ← all weight entries
-  chat-history.json             ← recent chat (last 100)
+  {yyyy}/{mm}/food-{yyyy-mm-dd}.csv   ← daily food log
+  {yyyy}/{mm}/notes-{yyyy-mm-dd}.csv  ← daily notes
+  sleep/{yyyy}-{mm}.csv               ← monthly sleep log
+  weight.csv                          ← all weight entries
+  chat-history.json                   ← recent chat (last 100)
 nutrition.json               ← shared calorie database
 targets.json                 ← per-user calorie targets + timezone
 pairing/                     ← user allowlist and pending requests
@@ -92,6 +92,7 @@ Branch: `main` only
 - No meal types — just timestamp + food + calories
 - AI cross-questions for missing info before logging
 - `log_type` parameter on shared tools (edit/remove/get/grep) instead of separate tools per data type
+- Food and notes are per-day files (`food-{date}.csv`, `notes-{date}.csv`) in `{yyyy}/{mm}/` dirs; sleep is per-month; weight is single file
 - Adaptive debounce batches rapid messages; each batch gets a block ID (first message's Telegram timestamp)
 - Per-user git repos auto-commit after every data-changing action with block ID in commit message
 - Stale message detection: warns when messages are >5 min old (bot was down)

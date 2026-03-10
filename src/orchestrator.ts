@@ -17,6 +17,7 @@ import {
 } from "./sleep-log.js";
 import {
   getNotesForDateRange,
+  getTodayNotes,
   grepNotes,
 } from "./notes-log.js";
 import {
@@ -104,7 +105,7 @@ TOOLS — WHEN AND HOW TO USE:
 2. log_sleep — Log a sleep entry. Needs: type (night/nap), start_time, end_time, quality (1-10). Optional: notes.
 3. log_note — Save a note to the user's notes log. Use when they explicitly ask to save/record a note, reminder, or observation.
 4. log_weight — Record the user's weight in kg. Convert from lbs if needed (1 lb = 0.4536 kg). Optional notes.
-5. edit_entry — Edit any entry by number. Set log_type to "food", "sleep", "notes", or "weight". Set date (yyyy-mm-dd) for past food/sleep entries, omit for today. For notes/weight, date is not needed (single file, global entry numbers).
+5. edit_entry — Edit any entry by number. Set log_type to "food", "sleep", "notes", or "weight". Set date (yyyy-mm-dd) for past food/sleep/notes entries, omit for today. For weight, date is not needed (single file, global entry numbers).
 6. remove_entry — Remove any entry by number. Same log_type and date params as edit_entry.
 7. search — Web search via Perplexity. Use for nutrition facts, calorie counts, health info, current prices, or anything you're unsure about. Results come back to you — synthesize them into a helpful response.
 8. get_entries — Retrieve CSV entries for a date range. Set log_type to "food", "sleep", "notes", or "weight". Results come back to you.
@@ -124,7 +125,9 @@ CHOOSING THE RIGHT TOOL:
 NOTES:
 - Notes are a general-purpose log. The user might say "note: doctor appointment next week" or "save a note about switching to brown rice"
 - Only use log_note when the user explicitly asks to save/record something — don't automatically create notes
-- Notes are stored in a single CSV file (notes.csv), not per date. Entry numbers are global.
+- Notes are stored per day in notes-{yyyy-mm-dd}.csv files (same directory as food logs). Entry numbers are per-day (#1, #2, etc.), just like food.
+- For today's notes: edit_entry/remove_entry without a date param
+- For past notes: set the date param (yyyy-mm-dd)
 - Users can ask to delete notes — use remove_entry with log_type="notes" and the entry number
 - The context only shows the last 7 days of notes. Use get_entries or grep_logs with log_type="notes" for older notes.
 
@@ -645,6 +648,7 @@ export interface OrchestratorContext {
   logsDir: string;
   userId: string;
   todaySleep: SleepEntry[];
+  todayNotes: NoteEntry[];
 }
 
 /** Build a tree-like listing of the user's log directory. */
@@ -782,6 +786,11 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     "",
     "=== TODAY'S SLEEP LOG ===",
     todaySleepStr,
+    "",
+    "=== TODAY'S NOTES ===",
+    ctx.todayNotes.length > 0
+      ? ctx.todayNotes.map((n, i) => `  #${i + 1}  ${n.note}`).join("\n")
+      : "  (no notes today)",
   ];
 
   // Raw CSV data for precise reference
@@ -834,6 +843,10 @@ function buildContextBlock(ctx: OrchestratorContext): string {
     `User log directory: logs/${ctx.userId}/`,
     dirTree,
     "",
+    "File naming:",
+    "  food-{yyyy-mm-dd}.csv — daily food log",
+    "  notes-{yyyy-mm-dd}.csv — daily notes",
+    "  (both in {yyyy}/{mm}/ subdirectories)",
     "CSV schemas:",
     "  Food: timestamp,food_item,quantity,unit,calories,notes",
     "  Sleep: date,type,start_time,end_time,duration_hours,quality,notes",
@@ -878,7 +891,10 @@ function getEntriesForDateRange(
   const files = listCsvFiles(logsDir);
   const results: string[] = [];
   for (const f of files) {
-    const datePart = path.basename(f, ".csv"); // yyyy-mm-dd
+    const basename = path.basename(f, ".csv");
+    // Match food-yyyy-mm-dd.csv files
+    if (!basename.startsWith("food-")) continue;
+    const datePart = basename.slice(5); // strip "food-" prefix
     if (datePart >= startDate && datePart <= endDate) {
       const entries = readCsvEntries(path.join(logsDir, f));
       if (entries.length > 0) {
@@ -897,7 +913,9 @@ function grepLogs(logsDir: string, pattern: string): string {
   const lower = pattern.toLowerCase();
   const results: string[] = [];
   for (const f of files) {
-    const datePart = path.basename(f, ".csv");
+    const basename = path.basename(f, ".csv");
+    if (!basename.startsWith("food-")) continue;
+    const datePart = basename.slice(5);
     const entries = readCsvEntries(path.join(logsDir, f));
     for (const line of entries) {
       if (line.toLowerCase().includes(lower)) {

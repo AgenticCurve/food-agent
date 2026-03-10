@@ -39,7 +39,7 @@ import {
   updateSleepEntry,
   removeSleepEntry,
 } from "./sleep-log.js";
-import { appendNote, updateNote, removeNote } from "./notes-log.js";
+import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 
@@ -116,6 +116,7 @@ async function processInput(
     logsDir: getLogDirPath(userId),
     userId,
     todaySleep: getTodaySleep(userId, target.timezone),
+    todayNotes: getTodayNotes(userId, target.timezone),
   };
 
   let result;
@@ -190,7 +191,7 @@ async function processInput(
     }
 
     case "log_note": {
-      appendNote(userId, { timestamp: nowTZ(target.timezone), note: result.note });
+      appendNote(userId, { timestamp: nowTZ(target.timezone), note: result.note }, target.timezone);
       print(result.message);
       addMessage(userId, "assistant", result.message);
       break;
@@ -216,8 +217,11 @@ async function processInput(
         const updated = updateSleepEntry(userId, editDate, result.entry_number, result.updates as Partial<SleepEntry>);
         print(updated ? result.message : `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`);
       } else if (result.log_type === "notes") {
-        const updated = updateNote(userId, result.entry_number, result.updates as { note?: string });
-        print(updated ? result.message : `Couldn't find note #${result.entry_number}.`);
+        const noteUpdates = result.updates as { note?: string };
+        const updated = result.date
+          ? updateNoteByDate(userId, editDate, result.entry_number, noteUpdates)
+          : updateTodayNote(userId, result.entry_number, noteUpdates, target.timezone);
+        print(updated ? result.message : `Couldn't find note #${result.entry_number} on ${editDate}.`);
       } else if (result.log_type === "weight") {
         const updated = updateWeight(userId, result.entry_number, result.updates as { weight_kg?: number; notes?: string });
         print(updated ? result.message : `Couldn't find weight entry #${result.entry_number}.`);
@@ -252,8 +256,10 @@ async function processInput(
         const removed = removeSleepEntry(userId, removeDate, result.entry_number);
         print(removed ? result.message : `Couldn't find sleep entry #${result.entry_number} on ${removeDate}.`);
       } else if (result.log_type === "notes") {
-        const removed = removeNote(userId, result.entry_number);
-        print(removed ? result.message : `Couldn't find note #${result.entry_number}.`);
+        const removed = result.date
+          ? removeNoteByDate(userId, removeDate, result.entry_number)
+          : removeTodayNote(userId, result.entry_number, target.timezone);
+        print(removed ? result.message : `Couldn't find note #${result.entry_number} on ${removeDate}.`);
       } else if (result.log_type === "weight") {
         const removed = removeWeight(userId, result.entry_number);
         print(removed ? result.message : `Couldn't find weight entry #${result.entry_number}.`);

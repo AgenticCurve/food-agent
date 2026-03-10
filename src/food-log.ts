@@ -71,10 +71,10 @@ function getUserDir(userId: string): string {
   return dir;
 }
 
-/** logs/{userId}/{yyyy}/{mm}/{yyyy-mm-dd}.csv */
+/** logs/{userId}/{yyyy}/{mm}/food-{yyyy-mm-dd}.csv */
 function getDateFilePath(userId: string, date: string): string {
   const [year, month] = date.split("-");
-  return path.join(LOGS_DIR, userId, year, month, `${date}.csv`);
+  return path.join(LOGS_DIR, userId, year, month, `food-${date}.csv`);
 }
 
 function escapeCSV(value: string): string {
