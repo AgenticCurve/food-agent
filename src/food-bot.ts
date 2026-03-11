@@ -738,45 +738,44 @@ function formatTodayPage(entries: FoodEntry[], dailyTarget: number): PageResult 
   return { text: lines.join("\n"), buttons: [] };
 }
 
-// /week — 20 per page
-const WEEK_PAGE_SIZE = 20;
+// /week — paginated by day (1 day per page)
+
+function groupByDate(entries: FoodEntry[]): Map<string, FoodEntry[]> {
+  const map = new Map<string, FoodEntry[]>();
+  for (const e of entries) {
+    const date = e.timestamp.slice(0, 10);
+    const arr = map.get(date);
+    if (arr) arr.push(e);
+    else map.set(date, [e]);
+  }
+  return map;
+}
 
 function formatWeekPage(entries: FoodEntry[], dailyTarget: number, page: number): PageResult {
-  const total = entries.length;
-  const totalPages = Math.ceil(total / WEEK_PAGE_SIZE);
-  const start = page * WEEK_PAGE_SIZE;
-  const slice = entries.slice(start, start + WEEK_PAGE_SIZE);
+  const grouped = groupByDate(entries);
+  const dates = [...grouped.keys()];
+  const totalDays = dates.length;
+  const totalPages = totalDays;
+  const pageDate = dates[page];
 
-  // Group by date for daily totals on first page header
   const totalCal = entries.reduce((s, e) => s + e.calories, 0);
-  const days = new Set(entries.map((e) => e.timestamp.slice(0, 10))).size;
-  const avgCal = days > 0 ? Math.round(totalCal / days) : 0;
+  const avgCal = totalDays > 0 ? Math.round(totalCal / totalDays) : 0;
 
   const lines = [
-    `📅 **This Week** — ${total} entries across ${days} days${totalPages > 1 ? ` · page ${page + 1}/${totalPages}` : ""}`,
+    `📅 **This Week** — ${entries.length} entries across ${totalDays} days${totalPages > 1 ? ` · day ${page + 1}/${totalPages}` : ""}`,
     `Total: ${totalCal} cal · Avg: ${avgCal} cal/day · Target: ${dailyTarget} cal/day`,
     "",
   ];
 
-  let currentDate = "";
-  let dayTotal = 0;
-  for (let i = 0; i < slice.length; i++) {
-    const e = slice[i];
-    const date = e.timestamp.slice(0, 10);
-    if (date !== currentDate) {
-      if (currentDate && dayTotal > 0) {
-        lines.push(`  _Day total: ${dayTotal} cal_`);
-        lines.push("");
-      }
-      currentDate = date;
-      dayTotal = 0;
-      lines.push(`**${date}**`);
+  if (pageDate) {
+    const dayEntries = grouped.get(pageDate) || [];
+    const dayTotal = dayEntries.reduce((s, e) => s + e.calories, 0);
+    const pct = Math.round((dayTotal / dailyTarget) * 100);
+    lines.push(`**${pageDate}** — ${dayTotal} cal (${pct}%)`);
+    for (let i = 0; i < dayEntries.length; i++) {
+      const e = dayEntries[i];
+      lines.push(`  #${i + 1} ${extractTime(e.timestamp)} — ${e.food_item} · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
     }
-    dayTotal += e.calories;
-    lines.push(`  ${extractTime(e.timestamp)} — ${e.food_item} · ${e.quantity} ${e.unit} · ${e.calories} cal`);
-  }
-  if (dayTotal > 0) {
-    lines.push(`  _Day total: ${dayTotal} cal_`);
   }
 
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
