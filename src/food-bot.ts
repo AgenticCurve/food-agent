@@ -156,13 +156,25 @@ async function sendText(
   bot: TelegramBot,
   chatId: number,
   text: string,
-): Promise<void> {
+  replyMarkup?: TelegramBot.InlineKeyboardMarkup,
+): Promise<TelegramBot.Message> {
   const html = markdownToTelegramHtml(text);
+  const opts: TelegramBot.SendMessageOptions = { parse_mode: "HTML" };
+  if (replyMarkup) opts.reply_markup = replyMarkup;
   try {
-    await bot.sendMessage(chatId, html, { parse_mode: "HTML" });
+    return await bot.sendMessage(chatId, html, opts);
   } catch {
-    await bot.sendMessage(chatId, text);
+    return await bot.sendMessage(chatId, text, replyMarkup ? { reply_markup: replyMarkup } : {});
   }
+}
+
+function undoButtons(callbackData: string): TelegramBot.InlineKeyboardMarkup {
+  return {
+    inline_keyboard: [[
+      { text: "❌ Undo", callback_data: callbackData },
+      { text: "👍", callback_data: "ok" },
+    ]],
+  };
 }
 
 function isQuietHours(timezone: string): boolean {
@@ -343,7 +355,10 @@ async function handleMessages(
         `Logged ${entries.length} items for ${userId}: ${entries.map((e) => `${e.food_item} (${e.calories} cal)`).join(", ")}`,
       );
 
-      await sendText(bot, chatId, confirmMsg);
+      const entryDate = now.split("T")[0];
+      const startNum = updatedToday.length - entries.length + 1;
+      const endNum = updatedToday.length;
+      await sendText(bot, chatId, confirmMsg, undoButtons(`u|f|${entryDate}|${startNum}|${endNum}`));
       addMessage(userId, "assistant", confirmMsg);
       break;
     }
@@ -379,7 +394,8 @@ async function handleMessages(
         `  ⭐ Quality: ${sleepEntry.quality}/10`,
         sleepEntry.notes ? `  📝 ${sleepEntry.notes}` : "",
       ].filter(Boolean).join("\n");
-      await sendText(bot, chatId, sleepConfirm);
+      const sleepNum = getTodaySleep(userId, target.timezone).length;
+      await sendText(bot, chatId, sleepConfirm, undoButtons(`u|s|${today}|${sleepNum}`));
       addMessage(userId, "assistant", sleepConfirm);
       break;
     }
@@ -389,7 +405,9 @@ async function handleMessages(
       appendNote(userId, { timestamp: noteTs, note: result.note }, target.timezone);
       log("INFO", `Saved note for ${userId}: "${result.note.slice(0, 50)}"`);
       const noteConfirm = `${result.message}\n\n  📝 ${extractTime(noteTs)} — ${result.note}`;
-      await sendText(bot, chatId, noteConfirm);
+      const noteDate = noteTs.split("T")[0];
+      const noteNum = getTodayNotes(userId, target.timezone).length;
+      await sendText(bot, chatId, noteConfirm, undoButtons(`u|n|${noteDate}|${noteNum}`));
       addMessage(userId, "assistant", noteConfirm);
       break;
     }
@@ -408,7 +426,8 @@ async function handleMessages(
         `  ⚖️ ${result.weight_kg} kg`,
         result.notes ? `  📝 ${result.notes}` : "",
       ].filter(Boolean).join("\n");
-      await sendText(bot, chatId, weightConfirm);
+      const weightNum = getAllWeights(userId).length;
+      await sendText(bot, chatId, weightConfirm, undoButtons(`u|w|${weightNum}`));
       addMessage(userId, "assistant", weightConfirm);
       break;
     }
@@ -431,7 +450,8 @@ async function handleMessages(
           : "",
         e.notes ? `  📝 ${e.notes}` : "",
       ].filter(Boolean).join("\n");
-      await sendText(bot, chatId, labelConfirm);
+      const labelNum = getAllNutritionLabels(userId).length;
+      await sendText(bot, chatId, labelConfirm, undoButtons(`u|l|${labelNum}`));
       addMessage(userId, "assistant", labelConfirm);
       break;
     }
@@ -597,7 +617,8 @@ async function handleMessages(
       addProfileFact(userId, result.fact);
       log("INFO", `Saved profile fact for ${userId}: "${result.fact}"`);
       const profileConfirm = `${result.message}\n\n  👤 ${result.fact}`;
-      await sendText(bot, chatId, profileConfirm);
+      const factNum = getProfile(userId).length;
+      await sendText(bot, chatId, profileConfirm, undoButtons(`u|p|${factNum}`));
       addMessage(userId, "assistant", profileConfirm);
       break;
     }
@@ -1240,6 +1261,97 @@ async function main(): Promise<void> {
   log("INFO", "Food Agent started. Waiting for messages...");
 
   setupCommands(bot, openrouterKey);
+
+  // --- Inline button callbacks ---
+  bot.on("callback_query", async (query) => {
+    if (!query.data || !query.message || !query.from) return;
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const userId = String(query.from.id);
+
+    if (query.data === "ok") {
+      await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    if (!query.data.startsWith("u|")) {
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    const parts = query.data.split("|");
+    const type = parts[1];
+    const target = getTarget(userId);
+    let undoneText = "";
+
+    try {
+      switch (type) {
+        case "f": {
+          // u|f|DATE|FROM|TO
+          const date = parts[2];
+          const from = parseInt(parts[3], 10);
+          const to = parseInt(parts[4], 10);
+          for (let n = to; n >= from; n--) {
+            removeEntryByDate(userId, date, n);
+          }
+          undoneText = `Removed ${to - from + 1} food entry${to > from ? "ies" : ""}.`;
+          break;
+        }
+        case "s": {
+          // u|s|DATE|NUM
+          removeSleepEntry(userId, parts[2], parseInt(parts[3], 10));
+          undoneText = "Sleep entry removed.";
+          break;
+        }
+        case "n": {
+          // u|n|DATE|NUM
+          removeNoteByDate(userId, parts[2], parseInt(parts[3], 10));
+          undoneText = "Note removed.";
+          break;
+        }
+        case "w": {
+          // u|w|NUM
+          removeWeight(userId, parseInt(parts[2], 10));
+          undoneText = "Weight entry removed.";
+          break;
+        }
+        case "l": {
+          // u|l|NUM
+          removeNutritionLabel(userId, parseInt(parts[2], 10));
+          undoneText = "Nutrition label removed.";
+          break;
+        }
+        case "p": {
+          // u|p|NUM
+          removeProfileFact(userId, parseInt(parts[2], 10));
+          undoneText = "Profile fact removed.";
+          break;
+        }
+      }
+
+      if (undoneText) {
+        commitUserData(userId, `undo: ${undoneText}`);
+        log("INFO", `Undo for ${userId}: ${undoneText}`);
+        // Update the message to show it was undone and remove buttons
+        const original = query.message && "text" in query.message ? (query.message as { text: string }).text : "";
+        const updatedText = `~~${original}~~\n\n↩️ ${undoneText}`;
+        try {
+          const html = markdownToTelegramHtml(updatedText);
+          await bot.editMessageText(html, { chat_id: chatId, message_id: messageId, parse_mode: "HTML" });
+        } catch {
+          await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+          await sendText(bot, chatId, `↩️ ${undoneText}`);
+        }
+      }
+    } catch (err) {
+      log("ERROR", `Undo failed for ${userId}: ${(err as Error).message}`);
+      await bot.answerCallbackQuery(query.id, { text: "Couldn't undo — entry may have already been modified." });
+      return;
+    }
+
+    await bot.answerCallbackQuery(query.id, { text: undoneText });
+  });
 
   const buffer = new MessageBuffer(
     DEBOUNCE_MS,
