@@ -60,6 +60,7 @@ import {
 import { appendNote, getTodayNotes, getNotesForDays, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight, getAllWeights } from "./weight-log.js";
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
+import { publishNutritionTable } from "./telegraph.js";
 import { addProfileFact, removeProfileFact, getProfile } from "./profile.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
@@ -956,11 +957,28 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
     const data = entries.map((l, i) =>
       `#${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""}\n  Serving: ${l.serving_size} (${l.serving_size_g}g)\n  Per 100g: ${l.calories_per_100g} cal, P${l.protein_per_100g}g C${l.carbs_per_100g}g F${l.fat_per_100g}g${l.sugar_per_100g ? ` Sugar${l.sugar_per_100g}g` : ""}${l.fiber_per_100g ? ` Fiber${l.fiber_per_100g}g` : ""}${l.sodium_per_100g ? ` Na${l.sodium_per_100g}mg` : ""}${l.notes ? `\n  Notes: ${l.notes}` : ""}`
     ).join("\n\n");
+
+    // Publish table to Telegraph in background
+    const tablePromise = publishNutritionTable(entries).catch((err) => {
+      log("WARN", `Telegraph publish failed: ${err instanceof Error ? err.message : err}`);
+      return null;
+    });
+
     try {
-      const reply = await formatWithLLM(openrouterKey, data, "/nutrition", question, target.timezone);
-      await sendText(bot, msg.chat.id, reply);
+      const [reply, tableUrl] = await Promise.all([
+        formatWithLLM(openrouterKey, data, "/nutrition", question, target.timezone),
+        tablePromise,
+      ]);
+      const replyMarkup = tableUrl
+        ? { inline_keyboard: [[{ text: "📊 View Table", url: tableUrl }]] }
+        : undefined;
+      await sendText(bot, msg.chat.id, reply, replyMarkup);
     } catch {
-      await sendText(bot, msg.chat.id, data);
+      const tableUrl = await tablePromise;
+      const replyMarkup = tableUrl
+        ? { inline_keyboard: [[{ text: "📊 View Table", url: tableUrl }]] }
+        : undefined;
+      await sendText(bot, msg.chat.id, data, replyMarkup);
     }
   });
 
