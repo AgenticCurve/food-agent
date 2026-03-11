@@ -63,7 +63,7 @@ import { appendWeight, updateWeight, removeWeight, getAllWeights } from "./weigh
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
 import { writeNutritionHtmlFile } from "./nutrition-html.js";
 import { addProfileFact, removeProfileFact, getProfile } from "./profile.js";
-import type { FoodEntry, SleepEntry } from "./types.js";
+import type { FoodEntry, SleepEntry, NutritionLabelEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
 import { transcribeAudio, describeImage } from "./transcribe.js";
 
@@ -708,6 +708,50 @@ function buildCommitMessage(result: { type: string; [k: string]: unknown }): str
   }
 }
 
+// --- Nutrition label pagination ---
+
+const NUTRITION_PAGE_SIZE = 5;
+
+function formatNutritionPage(entries: NutritionLabelEntry[], page: number): { text: string; buttons: TelegramBot.InlineKeyboardButton[][] } {
+  const total = entries.length;
+  const totalPages = Math.ceil(total / NUTRITION_PAGE_SIZE);
+  const start = page * NUTRITION_PAGE_SIZE;
+  const slice = entries.slice(start, start + NUTRITION_PAGE_SIZE);
+
+  const lines = [
+    `🏷 **Nutrition Labels** (${total} products)${totalPages > 1 ? ` — page ${page + 1}/${totalPages}` : ""}`,
+    "",
+  ];
+
+  for (let i = 0; i < slice.length; i++) {
+    const e = slice[i];
+    const num = start + i + 1;
+    const factor = e.serving_size_g > 0 ? e.serving_size_g / 100 : 0;
+    lines.push(
+      `**#${num} ${e.product_name}**${e.brand ? ` (${e.brand})` : ""}`,
+      `  Serving: ${e.serving_size} (${e.serving_size_g}g)`,
+      `  Per 100g: ${e.calories_per_100g} cal · P${e.protein_per_100g}g · C${e.carbs_per_100g}g · F${e.fat_per_100g}g`,
+      `  Sugar ${e.sugar_per_100g}g · Fiber ${e.fiber_per_100g}g · Na ${e.sodium_per_100g}mg`,
+    );
+    if (factor > 0) {
+      lines.push(
+        `  Per serving: ${Math.round(e.calories_per_100g * factor)} cal · P${(e.protein_per_100g * factor).toFixed(1)}g · C${(e.carbs_per_100g * factor).toFixed(1)}g · F${(e.fat_per_100g * factor).toFixed(1)}g`,
+      );
+    }
+    if (e.notes) lines.push(`  _${e.notes}_`);
+    lines.push("");
+  }
+
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  const navRow: TelegramBot.InlineKeyboardButton[] = [];
+  if (page > 0) navRow.push({ text: "← Prev", callback_data: `nl|${page - 1}` });
+  if (page < totalPages - 1) navRow.push({ text: "More →", callback_data: `nl|${page + 1}` });
+  if (navRow.length > 0) buttons.push(navRow);
+  if (page === 0) buttons.push([{ text: "📊 Full Table (HTML)", callback_data: "nl|html" }]);
+
+  return { text: lines.join("\n"), buttons };
+}
+
 // --- Commands ---
 
 function setupCommands(bot: TelegramBot, openrouterKey: string): void {
@@ -955,27 +999,24 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
       await sendText(bot, msg.chat.id, "No nutrition profiles saved yet. Send a photo of a nutrition label to add one!");
       return;
     }
-    const data = entries.map((l, i) =>
-      `#${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""}\n  Serving: ${l.serving_size} (${l.serving_size_g}g)\n  Per 100g: ${l.calories_per_100g} cal, P${l.protein_per_100g}g C${l.carbs_per_100g}g F${l.fat_per_100g}g${l.sugar_per_100g ? ` Sugar${l.sugar_per_100g}g` : ""}${l.fiber_per_100g ? ` Fiber${l.fiber_per_100g}g` : ""}${l.sodium_per_100g ? ` Na${l.sodium_per_100g}mg` : ""}${l.notes ? `\n  Notes: ${l.notes}` : ""}`
-    ).join("\n\n");
 
-    try {
-      const reply = await formatWithLLM(openrouterKey, data, "/nutrition", question, target.timezone);
-      await sendText(bot, msg.chat.id, reply);
-    } catch {
-      await sendText(bot, msg.chat.id, data);
+    if (question) {
+      // Question mode — use LLM
+      const data = entries.map((l, i) =>
+        `#${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""}\n  Serving: ${l.serving_size} (${l.serving_size_g}g)\n  Per 100g: ${l.calories_per_100g} cal, P${l.protein_per_100g}g C${l.carbs_per_100g}g F${l.fat_per_100g}g${l.sugar_per_100g ? ` Sugar${l.sugar_per_100g}g` : ""}${l.fiber_per_100g ? ` Fiber${l.fiber_per_100g}g` : ""}${l.sodium_per_100g ? ` Na${l.sodium_per_100g}mg` : ""}${l.notes ? `\n  Notes: ${l.notes}` : ""}`
+      ).join("\n\n");
+      try {
+        const reply = await formatWithLLM(openrouterKey, data, "/nutrition", question, target.timezone);
+        await sendText(bot, msg.chat.id, reply);
+      } catch {
+        await sendText(bot, msg.chat.id, data);
+      }
+      return;
     }
 
-    // Send HTML table file
-    try {
-      const htmlPath = writeNutritionHtmlFile(entries);
-      await bot.sendDocument(msg.chat.id, htmlPath, {
-        caption: "📊 Open for full table view",
-      });
-      fs.unlinkSync(htmlPath);
-    } catch (err) {
-      log("WARN", `Failed to send nutrition HTML: ${err instanceof Error ? err.message : err}`);
-    }
+    // Direct view — deterministic format, paginated
+    const { text, buttons } = formatNutritionPage(entries, 0);
+    await sendText(bot, msg.chat.id, text, buttons.length > 0 ? { inline_keyboard: buttons } : undefined);
   });
 
   bot.onText(/\/profile(?:\s+([\s\S]+))?/, async (msg, match) => {
@@ -1293,6 +1334,44 @@ async function main(): Promise<void> {
 
     if (query.data === "ok") {
       await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Nutrition label pagination: nl|PAGE or nl|html
+    if (query.data.startsWith("nl|")) {
+      const param = query.data.split("|")[1];
+      const entries = getAllNutritionLabels(userId);
+
+      if (param === "html") {
+        try {
+          const htmlPath = writeNutritionHtmlFile(entries);
+          await bot.sendDocument(chatId, htmlPath, { caption: "📊 Full nutrition table" });
+          fs.unlinkSync(htmlPath);
+        } catch (err) {
+          log("WARN", `Failed to send nutrition HTML: ${err instanceof Error ? err.message : err}`);
+        }
+        await bot.answerCallbackQuery(query.id);
+        return;
+      }
+
+      const page = parseInt(param, 10) || 0;
+      const { text, buttons } = formatNutritionPage(entries, page);
+      try {
+        const html = markdownToTelegramHtml(text);
+        await bot.editMessageText(html, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: "HTML",
+          reply_markup: buttons.length > 0 ? { inline_keyboard: buttons } : undefined,
+        });
+      } catch {
+        await bot.editMessageText(text, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: buttons.length > 0 ? { inline_keyboard: buttons } : undefined,
+        });
+      }
       await bot.answerCallbackQuery(query.id);
       return;
     }
