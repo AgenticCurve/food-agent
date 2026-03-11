@@ -89,6 +89,7 @@ const MIN_GAP_SINCE_ACTIVITY_MS = 20 * 60 * 1000;
 
 const lastCheckinTime = new Map<string, number>();
 const lastUserMessageTime = new Map<string, number>();
+const pendingEditContext = new Map<string, string>(); // userId → context hint for next message
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const COMMAND_MODEL = "google/gemini-3-flash-preview";
@@ -171,13 +172,15 @@ async function sendText(
   }
 }
 
-function undoButtons(callbackData: string): TelegramBot.InlineKeyboardMarkup {
-  return {
-    inline_keyboard: [[
-      { text: "❌ Undo", callback_data: callbackData },
-      { text: "👍", callback_data: "ok" },
-    ]],
-  };
+function undoButtons(callbackData: string, editData?: string): TelegramBot.InlineKeyboardMarkup {
+  const row: TelegramBot.InlineKeyboardButton[] = [
+    { text: "❌ Undo", callback_data: callbackData },
+  ];
+  if (editData) {
+    row.push({ text: "✏️ Edit", callback_data: editData });
+  }
+  row.push({ text: "👍", callback_data: "ok" });
+  return { inline_keyboard: [row] };
 }
 
 function isQuietHours(timezone: string): boolean {
@@ -267,7 +270,14 @@ async function handleMessages(
   blockId: string,
 ): Promise<void> {
   const chatId = messages[0].chatId;
-  const combined = messages.map((m) => m.text).join("\n");
+  let combined = messages.map((m) => m.text).join("\n");
+
+  // Prepend edit context if user clicked "Edit" button on a previous entry
+  const editCtx = pendingEditContext.get(userId);
+  if (editCtx) {
+    pendingEditContext.delete(userId);
+    combined = `${editCtx} ${combined}`;
+  }
 
   // Detect stale messages (bot was down when user sent them)
   const firstMsgAge = Date.now() - messages[0].date * 1000;
@@ -371,7 +381,10 @@ async function handleMessages(
       const entryDate = now.split("T")[0];
       const startNum = updatedToday.length - entries.length + 1;
       const endNum = updatedToday.length;
-      await sendText(bot, chatId, confirmMsg, undoButtons(`u|f|${entryDate}|${startNum}|${endNum}`));
+      await sendText(bot, chatId, confirmMsg, undoButtons(
+        `u|f|${entryDate}|${startNum}|${endNum}`,
+        `e|f|${entryDate}|${startNum}|${endNum}`,
+      ));
       addMessage(userId, "assistant", confirmMsg);
       break;
     }
@@ -408,7 +421,7 @@ async function handleMessages(
         sleepEntry.notes ? `  📝 ${sleepEntry.notes}` : "",
       ].filter(Boolean).join("\n");
       const sleepNum = getTodaySleep(userId, target.timezone).length;
-      await sendText(bot, chatId, sleepConfirm, undoButtons(`u|s|${today}|${sleepNum}`));
+      await sendText(bot, chatId, sleepConfirm, undoButtons(`u|s|${today}|${sleepNum}`, `e|s|${today}|${sleepNum}`));
       addMessage(userId, "assistant", sleepConfirm);
       break;
     }
@@ -420,7 +433,7 @@ async function handleMessages(
       const noteConfirm = `${result.message}\n\n  📝 ${extractTime(noteTs)} — ${result.note}`;
       const noteDate = noteTs.split("T")[0];
       const noteNum = getTodayNotes(userId, target.timezone).length;
-      await sendText(bot, chatId, noteConfirm, undoButtons(`u|n|${noteDate}|${noteNum}`));
+      await sendText(bot, chatId, noteConfirm, undoButtons(`u|n|${noteDate}|${noteNum}`, `e|n|${noteDate}|${noteNum}`));
       addMessage(userId, "assistant", noteConfirm);
       break;
     }
@@ -440,7 +453,7 @@ async function handleMessages(
         result.notes ? `  📝 ${result.notes}` : "",
       ].filter(Boolean).join("\n");
       const weightNum = getAllWeights(userId).length;
-      await sendText(bot, chatId, weightConfirm, undoButtons(`u|w|${weightNum}`));
+      await sendText(bot, chatId, weightConfirm, undoButtons(`u|w|${weightNum}`, `e|w|${weightNum}`));
       addMessage(userId, "assistant", weightConfirm);
       break;
     }
@@ -464,7 +477,7 @@ async function handleMessages(
         e.notes ? `  📝 ${e.notes}` : "",
       ].filter(Boolean).join("\n");
       const labelNum = getAllNutritionLabels(userId).length;
-      await sendText(bot, chatId, labelConfirm, undoButtons(`u|l|${labelNum}`));
+      await sendText(bot, chatId, labelConfirm, undoButtons(`u|l|${labelNum}`, `e|l|${labelNum}`));
       addMessage(userId, "assistant", labelConfirm);
       break;
     }
@@ -639,7 +652,7 @@ async function handleMessages(
       log("INFO", `Saved profile fact for ${userId}: "${result.fact}"`);
       const profileConfirm = `${result.message}\n\n  👤 ${result.fact}`;
       const factNum = getProfile(userId).length;
-      await sendText(bot, chatId, profileConfirm, undoButtons(`u|p|${factNum}`));
+      await sendText(bot, chatId, profileConfirm, undoButtons(`u|p|${factNum}`, `e|p|${factNum}`));
       addMessage(userId, "assistant", profileConfirm);
       break;
     }
@@ -1590,6 +1603,60 @@ async function main(): Promise<void> {
 
     if (query.data === "ok") {
       await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Edit button: e|TYPE|...
+    if (query.data.startsWith("e|")) {
+      const parts = query.data.split("|");
+      const type = parts[1];
+      const target = getTarget(userId);
+      let context = "";
+
+      switch (type) {
+        case "f": {
+          // e|f|DATE|FROM|TO
+          const date = parts[2];
+          const from = parseInt(parts[3], 10);
+          const to = parseInt(parts[4], 10);
+          const entries = getTodayEntries(userId, target.timezone);
+          const items = entries.slice(from - 1, to).map((e, i) =>
+            `#${from + i} ${e.food_item} — ${e.quantity}${e.unit}, ${e.calories} cal`
+          ).join("; ");
+          context = `[User wants to edit today's food entries: ${items}. Date: ${date}, entry numbers: ${from}-${to}]`;
+          break;
+        }
+        case "s": {
+          context = `[User wants to edit sleep entry #${parts[3]} on ${parts[2]}]`;
+          break;
+        }
+        case "n": {
+          context = `[User wants to edit note #${parts[3]} on ${parts[2]}]`;
+          break;
+        }
+        case "w": {
+          context = `[User wants to edit weight entry #${parts[2]}]`;
+          break;
+        }
+        case "l": {
+          context = `[User wants to edit nutrition label #${parts[2]}]`;
+          break;
+        }
+        case "p": {
+          context = `[User wants to edit profile fact #${parts[2]}]`;
+          break;
+        }
+      }
+
+      if (context) {
+        pendingEditContext.set(userId, context);
+        // Remove buttons from the confirmation message
+        await bot.editMessageReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: messageId });
+        await bot.sendMessage(chatId, "What would you like to change?", {
+          reply_markup: { force_reply: true, selective: true },
+        });
+      }
       await bot.answerCallbackQuery(query.id);
       return;
     }
