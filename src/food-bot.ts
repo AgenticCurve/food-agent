@@ -11,6 +11,7 @@
  */
 
 import "dotenv/config";
+import fs from "fs";
 import TelegramBot from "node-telegram-bot-api";
 import { resolveBotToken, resolveOpenRouterKey } from "./settings.js";
 import {
@@ -60,7 +61,7 @@ import {
 import { appendNote, getTodayNotes, getNotesForDays, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight, getAllWeights } from "./weight-log.js";
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
-import { publishNutritionTable } from "./telegraph.js";
+import { writeNutritionHtmlFile } from "./nutrition-html.js";
 import { addProfileFact, removeProfileFact, getProfile } from "./profile.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
@@ -958,27 +959,22 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
       `#${i + 1} ${l.product_name}${l.brand ? ` (${l.brand})` : ""}\n  Serving: ${l.serving_size} (${l.serving_size_g}g)\n  Per 100g: ${l.calories_per_100g} cal, P${l.protein_per_100g}g C${l.carbs_per_100g}g F${l.fat_per_100g}g${l.sugar_per_100g ? ` Sugar${l.sugar_per_100g}g` : ""}${l.fiber_per_100g ? ` Fiber${l.fiber_per_100g}g` : ""}${l.sodium_per_100g ? ` Na${l.sodium_per_100g}mg` : ""}${l.notes ? `\n  Notes: ${l.notes}` : ""}`
     ).join("\n\n");
 
-    // Publish table to Telegraph in background
-    const tablePromise = publishNutritionTable(entries).catch((err) => {
-      log("WARN", `Telegraph publish failed: ${err instanceof Error ? err.message : err}`);
-      return null;
-    });
-
     try {
-      const [reply, tableUrl] = await Promise.all([
-        formatWithLLM(openrouterKey, data, "/nutrition", question, target.timezone),
-        tablePromise,
-      ]);
-      const replyMarkup = tableUrl
-        ? { inline_keyboard: [[{ text: "📊 View Table", url: tableUrl }]] }
-        : undefined;
-      await sendText(bot, msg.chat.id, reply, replyMarkup);
+      const reply = await formatWithLLM(openrouterKey, data, "/nutrition", question, target.timezone);
+      await sendText(bot, msg.chat.id, reply);
     } catch {
-      const tableUrl = await tablePromise;
-      const replyMarkup = tableUrl
-        ? { inline_keyboard: [[{ text: "📊 View Table", url: tableUrl }]] }
-        : undefined;
-      await sendText(bot, msg.chat.id, data, replyMarkup);
+      await sendText(bot, msg.chat.id, data);
+    }
+
+    // Send HTML table file
+    try {
+      const htmlPath = writeNutritionHtmlFile(entries);
+      await bot.sendDocument(msg.chat.id, htmlPath, {
+        caption: "📊 Open for full table view",
+      });
+      fs.unlinkSync(htmlPath);
+    } catch (err) {
+      log("WARN", `Failed to send nutrition HTML: ${err instanceof Error ? err.message : err}`);
     }
   });
 
