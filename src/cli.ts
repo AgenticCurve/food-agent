@@ -52,7 +52,7 @@ import {
 } from "./sleep-log.js";
 import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNoteByDate, removeNoteByDate } from "./notes-log.js";
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
-import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel } from "./nutrition-labels.js";
+import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
 import { addProfileFact, removeProfileFact } from "./profile.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 
@@ -242,21 +242,43 @@ async function processInput(
         result.date ||
         new Date().toLocaleDateString("en-CA", { timeZone: target.timezone });
 
+      let editMsg = "";
+
       if (result.log_type === "sleep") {
         const updated = updateSleepEntry(userId, editDate, result.entry_number, result.updates as Partial<SleepEntry>);
-        print(updated ? result.message : `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`);
+        if (updated) {
+          const dur = updated.duration_hours ? `${updated.duration_hours}h` : "";
+          const qual = updated.quality ? `quality ${updated.quality}/10` : "";
+          editMsg = `${result.message}\n\n✏️ Sleep #${result.entry_number} now:\n😴 ${updated.start_time ? extractTime(updated.start_time) : "?"} → ${updated.end_time ? extractTime(updated.end_time) : "?"}${dur ? ` (${dur})` : ""}${qual ? ` · ${qual}` : ""}${updated.notes ? ` · ${updated.notes}` : ""}`;
+        } else {
+          editMsg = `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`;
+        }
       } else if (result.log_type === "notes") {
         const noteUpdates = result.updates as { note?: string };
         const updated = result.date
           ? updateNoteByDate(userId, editDate, result.entry_number, noteUpdates)
           : updateTodayNote(userId, result.entry_number, noteUpdates, target.timezone);
-        print(updated ? result.message : `Couldn't find note #${result.entry_number} on ${editDate}.`);
+        if (updated) {
+          editMsg = `${result.message}\n\n✏️ Note #${result.entry_number} now:\n📝 ${updated.note}`;
+        } else {
+          editMsg = `Couldn't find note #${result.entry_number} on ${editDate}.`;
+        }
       } else if (result.log_type === "weight") {
         const updated = updateWeight(userId, result.entry_number, result.updates as { weight_kg?: number; notes?: string });
-        print(updated ? result.message : `Couldn't find weight entry #${result.entry_number}.`);
+        if (updated) {
+          editMsg = `${result.message}\n\n✏️ Weight #${result.entry_number} now:\n⚖️ ${updated.weight_kg} kg${updated.notes ? ` · ${updated.notes}` : ""}`;
+        } else {
+          editMsg = `Couldn't find weight entry #${result.entry_number}.`;
+        }
       } else if (result.log_type === "nutrition_labels") {
         const updated = updateNutritionLabel(userId, result.entry_number, result.updates as Record<string, unknown>);
-        print(updated ? result.message : `Couldn't find nutrition label #${result.entry_number}.`);
+        if (updated) {
+          const allLabels = getAllNutritionLabels(userId);
+          const verified = result.entry_number <= allLabels.length ? allLabels[result.entry_number - 1] : updated;
+          editMsg = `${result.message}\n\n✏️ Label #${result.entry_number} now:\n🏷 ${verified.product_name}${verified.brand ? ` (${verified.brand})` : ""}\nServing: ${verified.serving_size} (${verified.serving_size_g}g)\nPer 100g: ${verified.calories_per_100g} cal · P${verified.protein_per_100g}g · C${verified.carbs_per_100g}g · F${verified.fat_per_100g}g\nSugar ${verified.sugar_per_100g}g · Fiber ${verified.fiber_per_100g}g · Sodium ${verified.sodium_per_100g}mg${verified.notes ? `\n${verified.notes}` : ""}`;
+        } else {
+          editMsg = `Couldn't find nutrition label #${result.entry_number}.`;
+        }
       } else {
         const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
         const updated = result.date
@@ -270,12 +292,13 @@ async function processInput(
               quantity: 1,
             });
           }
-          print(result.message);
+          editMsg = `${result.message}\n\n✏️ Entry #${result.entry_number} now:\n🍽 ${updated.food_item} — ${updated.quantity} ${updated.unit} · ${updated.calories} cal`;
         } else {
-          print(`Couldn't find entry #${result.entry_number} on ${editDate}.`);
+          editMsg = `Couldn't find entry #${result.entry_number} on ${editDate}.`;
         }
       }
-      addMessage(userId, "assistant", result.message);
+      print(editMsg);
+      addMessage(userId, "assistant", editMsg);
       break;
     }
 

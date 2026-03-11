@@ -461,14 +461,18 @@ async function handleMessages(
         result.date ||
         new Date().toLocaleDateString("en-CA", { timeZone: target.timezone });
 
+      let editMsg = "";
+
       if (result.log_type === "sleep") {
         const updates = result.updates as Partial<SleepEntry>;
         const updated = updateSleepEntry(userId, editDate, result.entry_number, updates);
         if (updated) {
           log("INFO", `Edited sleep #${result.entry_number} (${editDate}) for ${userId}`);
-          await sendText(bot, chatId, result.message);
+          const dur = updated.duration_hours ? `${updated.duration_hours}h` : "";
+          const qual = updated.quality ? `quality ${updated.quality}/10` : "";
+          editMsg = `${result.message}\n\n✏️ Sleep #${result.entry_number} now:\n😴 ${updated.start_time ? extractTime(updated.start_time) : "?"} → ${updated.end_time ? extractTime(updated.end_time) : "?"}${dur ? ` (${dur})` : ""}${qual ? ` · ${qual}` : ""}${updated.notes ? ` · ${updated.notes}` : ""}`;
         } else {
-          await sendText(bot, chatId, `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`);
+          editMsg = `Couldn't find sleep entry #${result.entry_number} on ${editDate}.`;
         }
       } else if (result.log_type === "notes") {
         const noteUpdates = result.updates as { note?: string };
@@ -477,25 +481,28 @@ async function handleMessages(
           : updateTodayNote(userId, result.entry_number, noteUpdates, target.timezone);
         if (updated) {
           log("INFO", `Edited note #${result.entry_number} (${editDate}) for ${userId}`);
-          await sendText(bot, chatId, result.message);
+          editMsg = `${result.message}\n\n✏️ Note #${result.entry_number} now:\n📝 ${updated.note}`;
         } else {
-          await sendText(bot, chatId, `Couldn't find note #${result.entry_number} on ${editDate}.`);
+          editMsg = `Couldn't find note #${result.entry_number} on ${editDate}.`;
         }
       } else if (result.log_type === "weight") {
         const updated = updateWeight(userId, result.entry_number, result.updates as { weight_kg?: number; notes?: string });
         if (updated) {
           log("INFO", `Edited weight #${result.entry_number} for ${userId}`);
-          await sendText(bot, chatId, result.message);
+          editMsg = `${result.message}\n\n✏️ Weight #${result.entry_number} now:\n⚖️ ${updated.weight_kg} kg${updated.notes ? ` · ${updated.notes}` : ""}`;
         } else {
-          await sendText(bot, chatId, `Couldn't find weight entry #${result.entry_number}.`);
+          editMsg = `Couldn't find weight entry #${result.entry_number}.`;
         }
       } else if (result.log_type === "nutrition_labels") {
         const updated = updateNutritionLabel(userId, result.entry_number, result.updates as Record<string, unknown>);
         if (updated) {
-          log("INFO", `Edited nutrition label #${result.entry_number} for ${userId}`);
-          await sendText(bot, chatId, result.message);
+          // Verify by re-reading from file
+          const allLabels = getAllNutritionLabels(userId);
+          const verified = result.entry_number <= allLabels.length ? allLabels[result.entry_number - 1] : updated;
+          log("INFO", `Edited nutrition label #${result.entry_number} for ${userId}: ${verified.product_name}`);
+          editMsg = `${result.message}\n\n✏️ Label #${result.entry_number} now:\n🏷 **${verified.product_name}**${verified.brand ? ` (${verified.brand})` : ""}\nServing: ${verified.serving_size} (${verified.serving_size_g}g)\nPer 100g: ${verified.calories_per_100g} cal · P${verified.protein_per_100g}g · C${verified.carbs_per_100g}g · F${verified.fat_per_100g}g\nSugar ${verified.sugar_per_100g}g · Fiber ${verified.fiber_per_100g}g · Sodium ${verified.sodium_per_100g}mg${verified.notes ? `\n${verified.notes}` : ""}`;
         } else {
-          await sendText(bot, chatId, `Couldn't find nutrition label #${result.entry_number}.`);
+          editMsg = `Couldn't find nutrition label #${result.entry_number}.`;
         }
       } else {
         const updates: Partial<FoodEntry> = result.updates as Partial<FoodEntry>;
@@ -511,12 +518,13 @@ async function handleMessages(
             });
           }
           log("INFO", `Edited #${result.entry_number} (${editDate}) for ${userId}: ${updated.food_item} (${updated.calories} cal)`);
-          await sendText(bot, chatId, result.message);
+          editMsg = `${result.message}\n\n✏️ Entry #${result.entry_number} now:\n🍽 ${updated.food_item} — ${updated.quantity} ${updated.unit} · ${updated.calories} cal`;
         } else {
-          await sendText(bot, chatId, `Couldn't find entry #${result.entry_number} on ${editDate}.`);
+          editMsg = `Couldn't find entry #${result.entry_number} on ${editDate}.`;
         }
       }
-      addMessage(userId, "assistant", result.message);
+      await sendText(bot, chatId, editMsg);
+      addMessage(userId, "assistant", editMsg);
       break;
     }
 

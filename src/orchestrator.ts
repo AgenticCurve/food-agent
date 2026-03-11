@@ -409,7 +409,7 @@ const TOOLS = [
     function: {
       name: "edit_entry",
       description:
-        "Edit an existing entry by its number (#1, #2, etc.). Works for any date and both food and sleep logs. For past dates, use get_entries first to see the entries, then ALWAYS ask the user for explicit confirmation before editing. For food: use food_item, quantity, unit, calories, timestamp. For sleep: use sleep_type, start_time, end_time, quality, notes.",
+        "Edit an existing entry by its number (#1, #2, etc.). Works for any date and any log type. For past dates, use get_entries first to see the entries, then ALWAYS ask the user for explicit confirmation before editing. For food: use food_item, quantity, unit, calories, timestamp. For sleep: use sleep_type, start_time, end_time, quality, notes. For nutrition_labels: use product_name, brand, serving_size, serving_size_g, calories_per_100g, protein_per_100g, carbs_per_100g, fat_per_100g, sugar_per_100g, fiber_per_100g, sodium_per_100g, label_notes.",
       parameters: {
         type: "object",
         properties: {
@@ -469,6 +469,54 @@ const TOOLS = [
           notes: {
             type: "string",
             description: "Updated notes (sleep only)",
+          },
+          product_name: {
+            type: "string",
+            description: "Updated product name (nutrition_labels only)",
+          },
+          brand: {
+            type: "string",
+            description: "Updated brand (nutrition_labels only)",
+          },
+          serving_size: {
+            type: "string",
+            description: "Updated serving size description (nutrition_labels only)",
+          },
+          serving_size_g: {
+            type: "number",
+            description: "Updated serving size in grams (nutrition_labels only)",
+          },
+          calories_per_100g: {
+            type: "number",
+            description: "Updated calories per 100g (nutrition_labels only)",
+          },
+          protein_per_100g: {
+            type: "number",
+            description: "Updated protein per 100g in grams (nutrition_labels only)",
+          },
+          carbs_per_100g: {
+            type: "number",
+            description: "Updated carbs per 100g in grams (nutrition_labels only)",
+          },
+          fat_per_100g: {
+            type: "number",
+            description: "Updated fat per 100g in grams (nutrition_labels only)",
+          },
+          sugar_per_100g: {
+            type: "number",
+            description: "Updated sugar per 100g in grams (nutrition_labels only)",
+          },
+          fiber_per_100g: {
+            type: "number",
+            description: "Updated fiber per 100g in grams (nutrition_labels only)",
+          },
+          sodium_per_100g: {
+            type: "number",
+            description: "Updated sodium per 100g in mg (nutrition_labels only)",
+          },
+          label_notes: {
+            type: "string",
+            description: "Updated notes (nutrition_labels only)",
           },
           message: {
             type: "string",
@@ -1349,6 +1397,19 @@ export async function processMessage(
           } else if (logType === "weight") {
             if (parsed.quantity !== undefined) updates.weight_kg = parsed.quantity;
             if (parsed.notes !== undefined) updates.notes = parsed.notes;
+          } else if (logType === "nutrition_labels") {
+            if (parsed.product_name !== undefined) updates.product_name = parsed.product_name;
+            if (parsed.brand !== undefined) updates.brand = parsed.brand;
+            if (parsed.serving_size !== undefined) updates.serving_size = parsed.serving_size;
+            if (parsed.serving_size_g !== undefined) updates.serving_size_g = parsed.serving_size_g;
+            if (parsed.calories_per_100g !== undefined) updates.calories_per_100g = parsed.calories_per_100g;
+            if (parsed.protein_per_100g !== undefined) updates.protein_per_100g = parsed.protein_per_100g;
+            if (parsed.carbs_per_100g !== undefined) updates.carbs_per_100g = parsed.carbs_per_100g;
+            if (parsed.fat_per_100g !== undefined) updates.fat_per_100g = parsed.fat_per_100g;
+            if (parsed.sugar_per_100g !== undefined) updates.sugar_per_100g = parsed.sugar_per_100g;
+            if (parsed.fiber_per_100g !== undefined) updates.fiber_per_100g = parsed.fiber_per_100g;
+            if (parsed.sodium_per_100g !== undefined) updates.sodium_per_100g = parsed.sodium_per_100g;
+            if (parsed.label_notes !== undefined) updates.notes = parsed.label_notes;
           } else {
             if (parsed.food_item !== undefined) updates.food_item = parsed.food_item;
             if (parsed.quantity !== undefined) updates.quantity = parsed.quantity;
