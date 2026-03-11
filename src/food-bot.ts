@@ -63,7 +63,7 @@ import { appendWeight, updateWeight, removeWeight, getAllWeights } from "./weigh
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
 import { writeNutritionHtmlFile } from "./nutrition-html.js";
 import { addProfileFact, removeProfileFact, getProfile } from "./profile.js";
-import type { FoodEntry, SleepEntry, NutritionLabelEntry } from "./types.js";
+import type { FoodEntry, SleepEntry, NoteEntry, WeightEntry, NutritionLabelEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
 import { transcribeAudio, describeImage } from "./transcribe.js";
 
@@ -708,11 +708,186 @@ function buildCommitMessage(result: { type: string; [k: string]: unknown }): str
   }
 }
 
-// --- Nutrition label pagination ---
+// --- Slash command page formatters ---
 
+type PageResult = { text: string; buttons: TelegramBot.InlineKeyboardButton[][] };
+
+function paginationNav(prefix: string, page: number, totalPages: number): TelegramBot.InlineKeyboardButton[] {
+  const row: TelegramBot.InlineKeyboardButton[] = [];
+  if (page > 0) row.push({ text: "← Prev", callback_data: `${prefix}|${page - 1}` });
+  if (page < totalPages - 1) row.push({ text: "More →", callback_data: `${prefix}|${page + 1}` });
+  return row;
+}
+
+// /today — show all entries, no pagination
+function formatTodayPage(entries: FoodEntry[], dailyTarget: number): PageResult {
+  if (entries.length === 0) {
+    return { text: `🍽 **Today** — no food logged yet\nTarget: ${dailyTarget} cal`, buttons: [] };
+  }
+  const total = entries.reduce((s, e) => s + e.calories, 0);
+  const pct = Math.round((total / dailyTarget) * 100);
+  const remaining = dailyTarget - total;
+  const lines = [
+    `🍽 **Today** — ${total} / ${dailyTarget} cal (${pct}%)${remaining > 0 ? ` · ${remaining} remaining` : ""}`,
+    "",
+  ];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    lines.push(`#${i + 1} ${extractTime(e.timestamp)} — **${e.food_item}** · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
+  }
+  return { text: lines.join("\n"), buttons: [] };
+}
+
+// /week — 20 per page
+const WEEK_PAGE_SIZE = 20;
+
+function formatWeekPage(entries: FoodEntry[], dailyTarget: number, page: number): PageResult {
+  const total = entries.length;
+  const totalPages = Math.ceil(total / WEEK_PAGE_SIZE);
+  const start = page * WEEK_PAGE_SIZE;
+  const slice = entries.slice(start, start + WEEK_PAGE_SIZE);
+
+  // Group by date for daily totals on first page header
+  const totalCal = entries.reduce((s, e) => s + e.calories, 0);
+  const days = new Set(entries.map((e) => e.timestamp.slice(0, 10))).size;
+  const avgCal = days > 0 ? Math.round(totalCal / days) : 0;
+
+  const lines = [
+    `📅 **This Week** — ${total} entries across ${days} days${totalPages > 1 ? ` · page ${page + 1}/${totalPages}` : ""}`,
+    `Total: ${totalCal} cal · Avg: ${avgCal} cal/day · Target: ${dailyTarget} cal/day`,
+    "",
+  ];
+
+  let currentDate = "";
+  let dayTotal = 0;
+  for (let i = 0; i < slice.length; i++) {
+    const e = slice[i];
+    const date = e.timestamp.slice(0, 10);
+    if (date !== currentDate) {
+      if (currentDate && dayTotal > 0) {
+        lines.push(`  _Day total: ${dayTotal} cal_`);
+        lines.push("");
+      }
+      currentDate = date;
+      dayTotal = 0;
+      lines.push(`**${date}**`);
+    }
+    dayTotal += e.calories;
+    lines.push(`  ${extractTime(e.timestamp)} — ${e.food_item} · ${e.quantity} ${e.unit} · ${e.calories} cal`);
+  }
+  if (dayTotal > 0) {
+    lines.push(`  _Day total: ${dayTotal} cal_`);
+  }
+
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  const nav = paginationNav("wk", page, totalPages);
+  if (nav.length > 0) buttons.push(nav);
+  return { text: lines.join("\n"), buttons };
+}
+
+// /sleep — 20 per page, most recent first
+const SLEEP_PAGE_SIZE = 20;
+
+function formatSleepPage(entries: SleepEntry[], page: number): PageResult {
+  const total = entries.length;
+  const totalPages = Math.ceil(total / SLEEP_PAGE_SIZE);
+  const start = page * SLEEP_PAGE_SIZE;
+  const slice = entries.slice(start, start + SLEEP_PAGE_SIZE);
+
+  // Stats
+  const nightEntries = entries.filter((e) => e.type === "night");
+  const avgDur = nightEntries.length > 0
+    ? (nightEntries.reduce((s, e) => s + e.duration_hours, 0) / nightEntries.length).toFixed(1)
+    : "—";
+  const avgQual = nightEntries.length > 0
+    ? (nightEntries.reduce((s, e) => s + e.quality, 0) / nightEntries.length).toFixed(1)
+    : "—";
+
+  const lines = [
+    `😴 **Sleep Log** — ${total} entries${totalPages > 1 ? ` · page ${page + 1}/${totalPages}` : ""}`,
+    `Avg night: ${avgDur}h · Avg quality: ${avgQual}/10`,
+    "",
+  ];
+
+  for (const e of slice) {
+    const emoji = e.type === "nap" ? "💤" : "🌙";
+    lines.push(
+      `${emoji} **${e.date}** ${e.type} — ${extractTime(e.start_time)} → ${extractTime(e.end_time)} · ${e.duration_hours}h · quality ${e.quality}/10${e.notes ? ` _(${e.notes})_` : ""}`,
+    );
+  }
+
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  const nav = paginationNav("sl", page, totalPages);
+  if (nav.length > 0) buttons.push(nav);
+  return { text: lines.join("\n"), buttons };
+}
+
+// /notes — 20 per page
+const NOTES_PAGE_SIZE = 20;
+
+function formatNotesPage(entries: NoteEntry[], page: number): PageResult {
+  const total = entries.length;
+  const totalPages = Math.ceil(total / NOTES_PAGE_SIZE);
+  const start = page * NOTES_PAGE_SIZE;
+  const slice = entries.slice(start, start + NOTES_PAGE_SIZE);
+
+  const lines = [
+    `📝 **Notes** — ${total} entries${totalPages > 1 ? ` · page ${page + 1}/${totalPages}` : ""}`,
+    "",
+  ];
+
+  let currentDate = "";
+  for (const n of slice) {
+    const date = n.timestamp.slice(0, 10);
+    if (date !== currentDate) {
+      if (currentDate) lines.push("");
+      currentDate = date;
+      lines.push(`**${date}**`);
+    }
+    lines.push(`  ${extractTime(n.timestamp)} — ${n.note}`);
+  }
+
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  const nav = paginationNav("nt", page, totalPages);
+  if (nav.length > 0) buttons.push(nav);
+  return { text: lines.join("\n"), buttons };
+}
+
+// /weight — 20 per page, most recent first
+const WEIGHT_PAGE_SIZE = 20;
+
+function formatWeightPage(entries: WeightEntry[], page: number): PageResult {
+  const total = entries.length;
+  // Show most recent first
+  const reversed = [...entries].reverse();
+  const totalPages = Math.ceil(total / WEIGHT_PAGE_SIZE);
+  const start = page * WEIGHT_PAGE_SIZE;
+  const slice = reversed.slice(start, start + WEIGHT_PAGE_SIZE);
+
+  const latest = reversed[0];
+  const oldest = reversed[reversed.length - 1];
+  const change = total >= 2 ? (latest.weight_kg - oldest.weight_kg).toFixed(1) : null;
+
+  const lines = [
+    `⚖️ **Weight Log** — ${total} entries${totalPages > 1 ? ` · page ${page + 1}/${totalPages}` : ""}`,
+    `Latest: ${latest.weight_kg} kg${change !== null ? ` · Change: ${parseFloat(change) >= 0 ? "+" : ""}${change} kg` : ""}`,
+    "",
+  ];
+
+  for (const w of slice) {
+    lines.push(`${w.timestamp.slice(0, 10)} — **${w.weight_kg} kg**${w.notes ? ` _(${w.notes})_` : ""}`);
+  }
+
+  const buttons: TelegramBot.InlineKeyboardButton[][] = [];
+  const nav = paginationNav("wt", page, totalPages);
+  if (nav.length > 0) buttons.push(nav);
+  return { text: lines.join("\n"), buttons };
+}
+
+// /nutrition — 5 per page
 const NUTRITION_PAGE_SIZE = 5;
 
-function formatNutritionPage(entries: NutritionLabelEntry[], page: number): { text: string; buttons: TelegramBot.InlineKeyboardButton[][] } {
+function formatNutritionPage(entries: NutritionLabelEntry[], page: number): PageResult {
   const total = entries.length;
   const totalPages = Math.ceil(total / NUTRITION_PAGE_SIZE);
   const start = page * NUTRITION_PAGE_SIZE;
@@ -743,10 +918,8 @@ function formatNutritionPage(entries: NutritionLabelEntry[], page: number): { te
   }
 
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
-  const navRow: TelegramBot.InlineKeyboardButton[] = [];
-  if (page > 0) navRow.push({ text: "← Prev", callback_data: `nl|${page - 1}` });
-  if (page < totalPages - 1) navRow.push({ text: "More →", callback_data: `nl|${page + 1}` });
-  if (navRow.length > 0) buttons.push(navRow);
+  const nav = paginationNav("nl", page, totalPages);
+  if (nav.length > 0) buttons.push(nav);
   if (page === 0) buttons.push([{ text: "📊 Full Table (HTML)", callback_data: "nl|html" }]);
 
   return { text: lines.join("\n"), buttons };
@@ -893,17 +1066,22 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
     const question = match?.[1]?.trim() || "";
     const target = getTarget(userId);
     const entries = getTodayEntries(userId, target.timezone);
-    const total = entries.reduce((s, e) => s + e.calories, 0);
-    const data = entries.length > 0
-      ? `Daily target: ${target.daily_calories} cal\nToday's total: ${total} cal (${Math.round((total / target.daily_calories) * 100)}%)\n\n` +
-        entries.map((e, i) => `#${i + 1} ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal${e.notes ? ` [${e.notes}]` : ""}`).join("\n")
-      : `No food logged today. Daily target: ${target.daily_calories} cal.`;
-    try {
-      const reply = await formatWithLLM(openrouterKey, data, "/today", question, target.timezone);
-      await sendText(bot, msg.chat.id, reply);
-    } catch {
-      await sendText(bot, msg.chat.id, data);
+    if (question) {
+      const total = entries.reduce((s, e) => s + e.calories, 0);
+      const data = entries.length > 0
+        ? `Daily target: ${target.daily_calories} cal\nToday's total: ${total} cal\n\n` +
+          entries.map((e, i) => `#${i + 1} ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal${e.notes ? ` [${e.notes}]` : ""}`).join("\n")
+        : `No food logged today. Daily target: ${target.daily_calories} cal.`;
+      try {
+        const reply = await formatWithLLM(openrouterKey, data, "/today", question, target.timezone);
+        await sendText(bot, msg.chat.id, reply);
+      } catch {
+        await sendText(bot, msg.chat.id, data);
+      }
+      return;
     }
+    const { text } = formatTodayPage(entries, target.daily_calories);
+    await sendText(bot, msg.chat.id, text);
   });
 
   bot.onText(/\/week(?:\s+([\s\S]+))?/, async (msg, match) => {
@@ -913,17 +1091,22 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
     const target = getTarget(userId);
     const entries = getEntriesForDays(userId, 7, target.timezone);
     if (entries.length === 0) {
-      await sendText(bot, msg.chat.id, "No food entries in the last 7 days.");
+      await sendText(bot, msg.chat.id, "📅 **This Week** — no food entries in the last 7 days.");
       return;
     }
-    const data = `Daily target: ${target.daily_calories} cal\n\n` +
-      entries.map((e) => `${e.timestamp.slice(0, 10)} ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`).join("\n");
-    try {
-      const reply = await formatWithLLM(openrouterKey, data, "/week", question, target.timezone);
-      await sendText(bot, msg.chat.id, reply);
-    } catch {
-      await sendText(bot, msg.chat.id, data);
+    if (question) {
+      const data = `Daily target: ${target.daily_calories} cal\n\n` +
+        entries.map((e) => `${e.timestamp.slice(0, 10)} ${extractTime(e.timestamp)} — ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`).join("\n");
+      try {
+        const reply = await formatWithLLM(openrouterKey, data, "/week", question, target.timezone);
+        await sendText(bot, msg.chat.id, reply);
+      } catch {
+        await sendText(bot, msg.chat.id, data);
+      }
+      return;
     }
+    const { text, buttons } = formatWeekPage(entries, target.daily_calories, 0);
+    await sendText(bot, msg.chat.id, text, buttons.length > 0 ? { inline_keyboard: buttons } : undefined);
   });
 
   bot.onText(/\/sleep(?:\s+([\s\S]+))?/, async (msg, match) => {
@@ -931,20 +1114,27 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
     if (!isUserAllowed(userId)) return;
     const question = match?.[1]?.trim() || "";
     const target = getTarget(userId);
-    const entries = getSleepForDays(userId, 7, target.timezone);
+    const entries = getSleepForDays(userId, 30, target.timezone);
     if (entries.length === 0) {
-      await sendText(bot, msg.chat.id, "No sleep data in the last 7 days.");
+      await sendText(bot, msg.chat.id, "😴 **Sleep Log** — no sleep data yet.");
       return;
     }
-    const data = entries.map((s) =>
-      `${s.date} ${s.type}: ${extractTime(s.start_time)} → ${extractTime(s.end_time)} (${s.duration_hours}h, quality ${s.quality}/10)${s.notes ? ` — ${s.notes}` : ""}`
-    ).join("\n");
-    try {
-      const reply = await formatWithLLM(openrouterKey, data, "/sleep", question, target.timezone);
-      await sendText(bot, msg.chat.id, reply);
-    } catch {
-      await sendText(bot, msg.chat.id, data);
+    if (question) {
+      const data = entries.map((s) =>
+        `${s.date} ${s.type}: ${extractTime(s.start_time)} → ${extractTime(s.end_time)} (${s.duration_hours}h, quality ${s.quality}/10)${s.notes ? ` — ${s.notes}` : ""}`
+      ).join("\n");
+      try {
+        const reply = await formatWithLLM(openrouterKey, data, "/sleep", question, target.timezone);
+        await sendText(bot, msg.chat.id, reply);
+      } catch {
+        await sendText(bot, msg.chat.id, data);
+      }
+      return;
     }
+    // Most recent first
+    const reversed = [...entries].reverse();
+    const { text, buttons } = formatSleepPage(reversed, 0);
+    await sendText(bot, msg.chat.id, text, buttons.length > 0 ? { inline_keyboard: buttons } : undefined);
   });
 
   bot.onText(/\/notes(?:\s+([\s\S]+))?/, async (msg, match) => {
@@ -954,18 +1144,23 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
     const target = getTarget(userId);
     const entries = getNotesForDays(userId, 7, target.timezone);
     if (entries.length === 0) {
-      await sendText(bot, msg.chat.id, "No notes in the last 7 days.");
+      await sendText(bot, msg.chat.id, "📝 **Notes** — no notes in the last 7 days.");
       return;
     }
-    const data = entries.map((n) =>
-      `${n.timestamp.slice(0, 10)} ${extractTime(n.timestamp)} — ${n.note}`
-    ).join("\n");
-    try {
-      const reply = await formatWithLLM(openrouterKey, data, "/notes", question, target.timezone);
-      await sendText(bot, msg.chat.id, reply);
-    } catch {
-      await sendText(bot, msg.chat.id, data);
+    if (question) {
+      const data = entries.map((n) =>
+        `${n.timestamp.slice(0, 10)} ${extractTime(n.timestamp)} — ${n.note}`
+      ).join("\n");
+      try {
+        const reply = await formatWithLLM(openrouterKey, data, "/notes", question, target.timezone);
+        await sendText(bot, msg.chat.id, reply);
+      } catch {
+        await sendText(bot, msg.chat.id, data);
+      }
+      return;
     }
+    const { text, buttons } = formatNotesPage(entries, 0);
+    await sendText(bot, msg.chat.id, text, buttons.length > 0 ? { inline_keyboard: buttons } : undefined);
   });
 
   bot.onText(/\/weight(?:\s+([\s\S]+))?/, async (msg, match) => {
@@ -975,18 +1170,23 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
     const target = getTarget(userId);
     const entries = getAllWeights(userId);
     if (entries.length === 0) {
-      await sendText(bot, msg.chat.id, "No weight data yet.");
+      await sendText(bot, msg.chat.id, "⚖️ **Weight Log** — no weight data yet.");
       return;
     }
-    const data = entries.map((w) =>
-      `${w.timestamp.slice(0, 10)} — ${w.weight_kg} kg${w.notes ? ` (${w.notes})` : ""}`
-    ).join("\n");
-    try {
-      const reply = await formatWithLLM(openrouterKey, data, "/weight", question, target.timezone);
-      await sendText(bot, msg.chat.id, reply);
-    } catch {
-      await sendText(bot, msg.chat.id, data);
+    if (question) {
+      const data = entries.map((w) =>
+        `${w.timestamp.slice(0, 10)} — ${w.weight_kg} kg${w.notes ? ` (${w.notes})` : ""}`
+      ).join("\n");
+      try {
+        const reply = await formatWithLLM(openrouterKey, data, "/weight", question, target.timezone);
+        await sendText(bot, msg.chat.id, reply);
+      } catch {
+        await sendText(bot, msg.chat.id, data);
+      }
+      return;
     }
+    const { text, buttons } = formatWeightPage(entries, 0);
+    await sendText(bot, msg.chat.id, text, buttons.length > 0 ? { inline_keyboard: buttons } : undefined);
   });
 
   bot.onText(/\/nutrition(?:\s+([\s\S]+))?/, async (msg, match) => {
@@ -1370,6 +1570,58 @@ async function main(): Promise<void> {
           chat_id: chatId,
           message_id: messageId,
           reply_markup: buttons.length > 0 ? { inline_keyboard: buttons } : undefined,
+        });
+      }
+      await bot.answerCallbackQuery(query.id);
+      return;
+    }
+
+    // Generic pagination handler for wk, sl, nt, wt prefixes
+    const paginatedPrefixes = ["wk", "sl", "nt", "wt"];
+    const prefix = query.data.split("|")[0];
+    if (paginatedPrefixes.includes(prefix)) {
+      const page = parseInt(query.data.split("|")[1], 10) || 0;
+      const target = getTarget(userId);
+      let result: PageResult;
+
+      switch (prefix) {
+        case "wk": {
+          const entries = getEntriesForDays(userId, 7, target.timezone);
+          result = formatWeekPage(entries, target.daily_calories, page);
+          break;
+        }
+        case "sl": {
+          const entries = [...getSleepForDays(userId, 30, target.timezone)].reverse();
+          result = formatSleepPage(entries, page);
+          break;
+        }
+        case "nt": {
+          const entries = getNotesForDays(userId, 7, target.timezone);
+          result = formatNotesPage(entries, page);
+          break;
+        }
+        case "wt": {
+          const entries = getAllWeights(userId);
+          result = formatWeightPage(entries, page);
+          break;
+        }
+        default:
+          result = { text: "", buttons: [] };
+      }
+
+      try {
+        const html = markdownToTelegramHtml(result.text);
+        await bot.editMessageText(html, {
+          chat_id: chatId,
+          message_id: messageId,
+          parse_mode: "HTML",
+          reply_markup: result.buttons.length > 0 ? { inline_keyboard: result.buttons } : undefined,
+        });
+      } catch {
+        await bot.editMessageText(result.text, {
+          chat_id: chatId,
+          message_id: messageId,
+          reply_markup: result.buttons.length > 0 ? { inline_keyboard: result.buttons } : undefined,
         });
       }
       await bot.answerCallbackQuery(query.id);
