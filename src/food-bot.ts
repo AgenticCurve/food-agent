@@ -719,6 +719,44 @@ function paginationNav(prefix: string, page: number, totalPages: number): Telegr
   return row;
 }
 
+// --- Meal clustering (group entries within 5 min) ---
+
+type MealCluster = { time: string; entries: { index: number; entry: FoodEntry }[]; totalCal: number };
+
+function clusterMeals(entries: FoodEntry[]): MealCluster[] {
+  const clusters: MealCluster[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const time = extractTime(e.timestamp);
+    const ts = new Date(e.timestamp).getTime();
+    const last = clusters[clusters.length - 1];
+    const lastTs = last ? new Date(last.entries[last.entries.length - 1].entry.timestamp).getTime() : 0;
+    if (last && ts - lastTs <= 5 * 60 * 1000) {
+      last.entries.push({ index: i, entry: e });
+      last.totalCal += e.calories;
+    } else {
+      clusters.push({ time, entries: [{ index: i, entry: e }], totalCal: e.calories });
+    }
+  }
+  return clusters;
+}
+
+function formatMealLines(clusters: MealCluster[], indent: string): string[] {
+  const lines: string[] = [];
+  for (const cluster of clusters) {
+    if (cluster.entries.length === 1) {
+      const { index, entry: e } = cluster.entries[0];
+      lines.push(`${indent}#${index + 1} ${cluster.time} — **${e.food_item}** · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
+    } else {
+      lines.push(`${indent}🕐 **${cluster.time}** — ${cluster.totalCal} cal`);
+      for (const { index, entry: e } of cluster.entries) {
+        lines.push(`${indent}  #${index + 1} ${e.food_item} · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
+      }
+    }
+  }
+  return lines;
+}
+
 // /today — show all entries, no pagination
 function formatTodayPage(entries: FoodEntry[], dailyTarget: number): PageResult {
   if (entries.length === 0) {
@@ -730,11 +768,8 @@ function formatTodayPage(entries: FoodEntry[], dailyTarget: number): PageResult 
   const lines = [
     `🍽 **Today** — ${total} / ${dailyTarget} cal (${pct}%)${remaining > 0 ? ` · ${remaining} remaining` : ""}`,
     "",
+    ...formatMealLines(clusterMeals(entries), ""),
   ];
-  for (let i = 0; i < entries.length; i++) {
-    const e = entries[i];
-    lines.push(`#${i + 1} ${extractTime(e.timestamp)} — **${e.food_item}** · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
-  }
   return { text: lines.join("\n"), buttons: [] };
 }
 
@@ -772,10 +807,7 @@ function formatWeekPage(entries: FoodEntry[], dailyTarget: number, page: number)
     const dayTotal = dayEntries.reduce((s, e) => s + e.calories, 0);
     const pct = Math.round((dayTotal / dailyTarget) * 100);
     lines.push(`**${pageDate}** — ${dayTotal} cal (${pct}%)`);
-    for (let i = 0; i < dayEntries.length; i++) {
-      const e = dayEntries[i];
-      lines.push(`  #${i + 1} ${extractTime(e.timestamp)} — ${e.food_item} · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
-    }
+    lines.push(...formatMealLines(clusterMeals(dayEntries), "  "));
   }
 
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
