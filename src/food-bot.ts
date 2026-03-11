@@ -63,6 +63,7 @@ import { appendWeight, updateWeight, removeWeight, getAllWeights } from "./weigh
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
 import { writeNutritionHtmlFile } from "./nutrition-html.js";
 import { addProfileFact, removeProfileFact, getProfile } from "./profile.js";
+import { getEmoji, setEmoji } from "./food-emojis.js";
 import type { FoodEntry, SleepEntry, NoteEntry, WeightEntry, NutritionLabelEntry } from "./types.js";
 import { ensureUserRepo, commitUserData } from "./user-git.js";
 import { transcribeAudio, describeImage } from "./transcribe.js";
@@ -239,11 +240,14 @@ function buildLogConfirmation(
   allTodayEntries: FoodEntry[],
   dailyTarget: number,
   timezone: string,
+  userId: string,
+  entryEmojis?: string[],
 ): string {
   const startNum = allTodayEntries.length - newEntries.length + 1;
   const entryLines = newEntries
     .map((e, i) => {
-      return `  #${startNum + i}  ${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
+      const em = entryEmojis?.[i] || getEmoji(userId, e.food_item);
+      return `  #${startNum + i}  ${em ? `${em} ` : ""}${e.food_item} (${e.quantity} ${e.unit}) — ${e.calories} cal`;
     })
     .join("\n");
 
@@ -333,7 +337,8 @@ async function handleMessages(
 
       appendEntries(userId, entries);
 
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         if (entry.quantity > 0) {
           addFood(entry.food_item, {
             calories: Math.round(entry.calories / entry.quantity),
@@ -341,15 +346,21 @@ async function handleMessages(
             quantity: 1,
           });
         }
+        // Save emoji mapping
+        const emoji = result.entries[i]?.emoji;
+        if (emoji) setEmoji(userId, entry.food_item, emoji);
       }
 
       const updatedToday = getTodayEntries(userId, target.timezone);
+      const entryEmojis = result.entries.map((e) => e.emoji || "");
       const confirmMsg = buildLogConfirmation(
         result.message,
         entries,
         updatedToday,
         target.daily_calories,
         target.timezone,
+        userId,
+        entryEmojis,
       );
 
       log(
@@ -643,6 +654,14 @@ async function handleMessages(
       break;
     }
 
+    case "set_food_emoji": {
+      setEmoji(userId, result.food_item, result.emoji);
+      log("INFO", `Set emoji for ${userId}: "${result.food_item}" → ${result.emoji}`);
+      await sendText(bot, chatId, result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
     case "message": {
       await sendText(bot, chatId, result.text);
       addMessage(userId, "assistant", result.text);
@@ -703,6 +722,8 @@ function buildCommitMessage(result: { type: string; [k: string]: unknown }): str
       return `save_profile: ${(result.fact as string).slice(0, 60)}`;
     case "remove_profile_fact":
       return `remove_profile_fact: #${result.fact_number}`;
+    case "set_food_emoji":
+      return `set_food_emoji: ${result.food_item} → ${result.emoji}`;
     default:
       return "";
   }
@@ -741,16 +762,18 @@ function clusterMeals(entries: FoodEntry[]): MealCluster[] {
   return clusters;
 }
 
-function formatMealLines(clusters: MealCluster[], indent: string): string[] {
+function formatMealLines(clusters: MealCluster[], indent: string, emojiLookup: (item: string) => string): string[] {
   const lines: string[] = [];
   for (const cluster of clusters) {
     if (cluster.entries.length === 1) {
       const { index, entry: e } = cluster.entries[0];
-      lines.push(`${indent}#${index + 1} ${cluster.time} — **${e.food_item}** · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
+      const em = emojiLookup(e.food_item);
+      lines.push(`${indent}#${index + 1} ${cluster.time} — ${em ? `${em} ` : ""}**${e.food_item}** · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
     } else {
       lines.push(`${indent}🕐 **${cluster.time}** — ${cluster.totalCal} cal`);
       for (const { index, entry: e } of cluster.entries) {
-        lines.push(`${indent}  #${index + 1} ${e.food_item} · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
+        const em = emojiLookup(e.food_item);
+        lines.push(`${indent}  #${index + 1} ${em ? `${em} ` : ""}${e.food_item} · ${e.quantity} ${e.unit} · ${e.calories} cal${e.notes ? ` _(${e.notes})_` : ""}`);
       }
     }
   }
@@ -758,17 +781,18 @@ function formatMealLines(clusters: MealCluster[], indent: string): string[] {
 }
 
 // /today — show all entries, no pagination
-function formatTodayPage(entries: FoodEntry[], dailyTarget: number): PageResult {
+function formatTodayPage(entries: FoodEntry[], dailyTarget: number, userId: string): PageResult {
   if (entries.length === 0) {
     return { text: `🍽 **Today** — no food logged yet\nTarget: ${dailyTarget} cal`, buttons: [] };
   }
   const total = entries.reduce((s, e) => s + e.calories, 0);
   const pct = Math.round((total / dailyTarget) * 100);
   const remaining = dailyTarget - total;
+  const emojiLookup = (item: string) => getEmoji(userId, item);
   const lines = [
     `🍽 **Today** — ${total} / ${dailyTarget} cal (${pct}%)${remaining > 0 ? ` · ${remaining} remaining` : ""}`,
     "",
-    ...formatMealLines(clusterMeals(entries), ""),
+    ...formatMealLines(clusterMeals(entries), "", emojiLookup),
   ];
   return { text: lines.join("\n"), buttons: [] };
 }
@@ -786,7 +810,7 @@ function groupByDate(entries: FoodEntry[]): Map<string, FoodEntry[]> {
   return map;
 }
 
-function formatWeekPage(entries: FoodEntry[], dailyTarget: number, page: number): PageResult {
+function formatWeekPage(entries: FoodEntry[], dailyTarget: number, page: number, userId: string): PageResult {
   const grouped = groupByDate(entries);
   const dates = [...grouped.keys()];
   const totalDays = dates.length;
@@ -795,6 +819,7 @@ function formatWeekPage(entries: FoodEntry[], dailyTarget: number, page: number)
 
   const totalCal = entries.reduce((s, e) => s + e.calories, 0);
   const avgCal = totalDays > 0 ? Math.round(totalCal / totalDays) : 0;
+  const emojiLookup = (item: string) => getEmoji(userId, item);
 
   const lines = [
     `📅 **This Week** — ${entries.length} entries across ${totalDays} days${totalPages > 1 ? ` · day ${page + 1}/${totalPages}` : ""}`,
@@ -807,7 +832,7 @@ function formatWeekPage(entries: FoodEntry[], dailyTarget: number, page: number)
     const dayTotal = dayEntries.reduce((s, e) => s + e.calories, 0);
     const pct = Math.round((dayTotal / dailyTarget) * 100);
     lines.push(`**${pageDate}** — ${dayTotal} cal (${pct}%)`);
-    lines.push(...formatMealLines(clusterMeals(dayEntries), "  "));
+    lines.push(...formatMealLines(clusterMeals(dayEntries), "  ", emojiLookup));
   }
 
   const buttons: TelegramBot.InlineKeyboardButton[][] = [];
@@ -1111,7 +1136,7 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
       }
       return;
     }
-    const { text } = formatTodayPage(entries, target.daily_calories);
+    const { text } = formatTodayPage(entries, target.daily_calories, userId);
     await sendText(bot, msg.chat.id, text);
   });
 
@@ -1136,7 +1161,7 @@ function setupCommands(bot: TelegramBot, openrouterKey: string): void {
       }
       return;
     }
-    const { text, buttons } = formatWeekPage(entries, target.daily_calories, 0);
+    const { text, buttons } = formatWeekPage(entries, target.daily_calories, 0, userId);
     await sendText(bot, msg.chat.id, text, buttons.length > 0 ? { inline_keyboard: buttons } : undefined);
   });
 
@@ -1618,7 +1643,7 @@ async function main(): Promise<void> {
       switch (prefix) {
         case "wk": {
           const entries = getEntriesForDays(userId, 7, target.timezone);
-          result = formatWeekPage(entries, target.daily_calories, page);
+          result = formatWeekPage(entries, target.daily_calories, page, userId);
           break;
         }
         case "sl": {

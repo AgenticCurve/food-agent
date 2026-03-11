@@ -106,7 +106,7 @@ When the user wants to remove an entry:
 
 TOOLS — WHEN AND HOW TO USE:
 
-1. log_food — Log food/medicine/supplement entries. Only call when you have complete info (item, quantity, calories).
+1. log_food — Log food/medicine/supplement entries. Only call when you have complete info (item, quantity, calories). Always include an emoji that best represents the food item.
 2. log_sleep — Log a sleep entry. Needs: type (night/nap), start_time, end_time, quality (1-10). Optional: notes.
 3. log_note — Save a note to the user's notes log. Use when they explicitly ask to save/record a note, reminder, or observation.
 4. log_weight — Record the user's weight in kg. Convert from lbs if needed (1 lb = 0.4536 kg). Optional notes.
@@ -122,6 +122,7 @@ TOOLS — WHEN AND HOW TO USE:
 14. set_timezone — Change the user's timezone.
 15. save_profile — Save a persistent fact about the user (diet, allergies, preferences). Use when they say "remember that...", "I'm allergic to...", etc.
 16. remove_profile_fact — Remove a fact from the user's profile by number. Use when they say "forget that...", "I'm no longer...", etc.
+17. set_food_emoji — Change the emoji for a food item. Use when the user says "change emoji for X to Y" or "use 🍕 for pizza".
 
 CHOOSING THE RIGHT TOOL:
 - Today's data is shown in context — answer simple questions directly, no tool needed.
@@ -228,8 +229,12 @@ const TOOLS = [
                   type: "string",
                   description: "Optional notes",
                 },
+                emoji: {
+                  type: "string",
+                  description: "Single emoji that best represents this food (e.g. 🍫 for chocolate, 🥚 for eggs, 💊 for medicine). Always provide one.",
+                },
               },
-              required: ["food_item", "quantity", "unit", "calories"],
+              required: ["food_item", "quantity", "unit", "calories", "emoji"],
             },
           },
           timestamp: {
@@ -752,6 +757,32 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "set_food_emoji",
+      description:
+        "Change the emoji for a food item. Use when the user says 'change emoji for X to Y', 'use 🍕 for pizza', etc.",
+      parameters: {
+        type: "object",
+        properties: {
+          food_item: {
+            type: "string",
+            description: "The food item name (lowercase, normalized)",
+          },
+          emoji: {
+            type: "string",
+            description: "The new emoji to use for this food item",
+          },
+          message: {
+            type: "string",
+            description: "Confirmation message to show the user",
+          },
+        },
+        required: ["food_item", "emoji", "message"],
+      },
+    },
+  },
 ];
 
 // --- Types ---
@@ -765,6 +796,7 @@ export type OrchestratorResult =
         unit: string;
         calories: number;
         notes?: string;
+        emoji?: string;
       }>;
       timestamp?: string;
       message: string;
@@ -808,6 +840,7 @@ export type OrchestratorResult =
   | { type: "set_timezone"; timezone: string; message: string }
   | { type: "save_profile"; fact: string; message: string }
   | { type: "remove_profile_fact"; fact_number: number; message: string }
+  | { type: "set_food_emoji"; food_item: string; emoji: string; message: string }
   | { type: "message"; text: string };
 
 interface ToolCall {
@@ -1325,6 +1358,7 @@ export async function processMessage(
             unit: string;
             calories: number;
             notes?: string;
+            emoji?: string;
           }>;
           return {
             type: "log_food",
@@ -1475,6 +1509,14 @@ export async function processMessage(
             type: "remove_profile_fact",
             fact_number: parsed.fact_number as number,
             message: (parsed.message as string) || "Removed from your profile!",
+          };
+
+        case "set_food_emoji":
+          return {
+            type: "set_food_emoji",
+            food_item: parsed.food_item as string,
+            emoji: parsed.emoji as string,
+            message: (parsed.message as string) || "Emoji updated!",
           };
       }
     }

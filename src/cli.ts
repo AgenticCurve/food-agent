@@ -54,6 +54,7 @@ import { appendNote, getTodayNotes, updateTodayNote, removeTodayNote, updateNote
 import { appendWeight, updateWeight, removeWeight } from "./weight-log.js";
 import { appendNutritionLabel, updateNutritionLabel, removeNutritionLabel, getAllNutritionLabels } from "./nutrition-labels.js";
 import { addProfileFact, removeProfileFact } from "./profile.js";
+import { setEmoji } from "./food-emojis.js";
 import type { FoodEntry, SleepEntry } from "./types.js";
 
 // --- Helpers ---
@@ -160,7 +161,8 @@ async function processInput(
 
       appendEntries(userId, entries);
 
-      for (const entry of entries) {
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
         if (entry.quantity > 0) {
           addFood(entry.food_item, {
             calories: Math.round(entry.calories / entry.quantity),
@@ -168,6 +170,8 @@ async function processInput(
             quantity: 1,
           });
         }
+        const emoji = result.entries[i]?.emoji;
+        if (emoji) setEmoji(userId, entry.food_item, emoji);
       }
 
       // Show LLM message + structured entries with daily numbers
@@ -369,6 +373,13 @@ async function processInput(
 
     case "remove_profile_fact": {
       removeProfileFact(userId, result.fact_number);
+      print(result.message);
+      addMessage(userId, "assistant", result.message);
+      break;
+    }
+
+    case "set_food_emoji": {
+      setEmoji(userId, result.food_item, result.emoji);
       print(result.message);
       addMessage(userId, "assistant", result.message);
       break;
